@@ -1,6 +1,8 @@
 import express from 'express';
 import multer from 'multer';
 import archiver from 'archiver';
+import fs from 'fs/promises';
+import path from 'path';
 import { createKey, loadKeys, deleteKey, updateKeyRateLimit, getKeyStats, updateKeyBalance, addBalance, getKey } from './key_manager.js';
 import { getUsageByKey, getUsageStats } from './usage_logger.js';
 import { loadPricing, updateModelPricing, deleteModelPricing, resetPricing, addModelPricing } from './pricing_manager.js';
@@ -11,7 +13,6 @@ import { createSession, validateSession, destroySession, verifyPassword, adminAu
 import { loadSettings, saveSettings } from './settings_manager.js';
 import tokenManager from '../auth/token_manager.js';
 import proxyManager from './proxy_manager.js';
-import { loadAnnouncements, createAnnouncement, updateAnnouncement, deleteAnnouncement, getActiveAnnouncements, getAnnouncementById } from './announcement_manager.js';
 import { getSecurityStats, unbanIP, unbanDevice, isIPBanned, isDeviceBanned } from './security_manager.js';
 import { isUserBanned, banUserFromSharing, unbanUser, recordShareUsage, getUserAverageUsage, checkAndBanAbuser, addToTokenBlacklist, removeFromTokenBlacklist, isUserBlacklisted, getTokenBlacklist, createVote, castVote, addVoteComment, processVoteResult, getActiveVotes, getVoteById, getUserVoteHistory, getAllVotes, getUserShareStatus } from './share_manager.js';
 import { registerUser, loginUser, getUserById, getUserByUsername, generateUserApiKey, deleteUserApiKey, getUserApiKeys, validateUserApiKey, updateUser, deleteUser, getUserStats, getAllUsers, toggleUserStatus, loginOrRegisterWithGoogle, getUserTokens, addUserToken, deleteUserToken, getUserAvailableToken } from './user_manager.js';
@@ -105,16 +106,6 @@ router.get('/user/usage', async (req, res) => {
 
     const result = await getUsageByKey(apiKey, limit, offset);
     res.json(result);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// 获取启用的公告（用户端，不需要认证）
-router.get('/announcements/active', async (req, res) => {
-  try {
-    const announcements = await getActiveAnnouncements();
-    res.json(announcements);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -744,68 +735,6 @@ router.post('/pricing/reset', async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
-
-// ========== 公告管理 API ==========
-
-// 获取所有公告（管理员）
-router.get('/announcements', async (req, res) => {
-  try {
-    const announcements = await loadAnnouncements();
-    res.json(announcements);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// 获取单个公告
-router.get('/announcements/:id', async (req, res) => {
-  try {
-    const announcement = await getAnnouncementById(req.params.id);
-    if (!announcement) {
-      return res.status(404).json({ error: '公告不存在' });
-    }
-    res.json(announcement);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// 创建公告
-router.post('/announcements', async (req, res) => {
-  try {
-    const announcement = await createAnnouncement(req.body);
-    await addLog('success', `公告已创建: ${req.body.title}`);
-    res.json({ success: true, announcement });
-  } catch (error) {
-    await addLog('error', `创建公告失败: ${error.message}`);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// 更新公告
-router.patch('/announcements/:id', async (req, res) => {
-  try {
-    const announcement = await updateAnnouncement(req.params.id, req.body);
-    await addLog('info', `公告已更新: ${announcement.title}`);
-    res.json({ success: true, announcement });
-  } catch (error) {
-    await addLog('error', `更新公告失败: ${error.message}`);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// 删除公告
-router.delete('/announcements/:id', async (req, res) => {
-  try {
-    await deleteAnnouncement(req.params.id);
-    await addLog('warn', `公告已删除: ${req.params.id}`);
-    res.json({ success: true });
-  } catch (error) {
-    await addLog('error', `删除公告失败: ${error.message}`);
-    res.status(500).json({ error: error.message });
-  }
-});
-
 
 // ========== 安全管理 API ==========
 
@@ -1463,6 +1392,86 @@ router.post('/ai-moderator/scheduler/restart', async (req, res) => {
     res.json({ success: true, message: 'AI调度器已重启' });
   } catch (error) {
     await addLog('error', `重启AI调度器失败: ${error.message}`);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ========== 文件系统操作API（用于Gemini CLI等工具）==========
+
+// 读取文件内容
+router.post('/read-file', adminAuth, async (req, res) => {
+  try {
+    // 参数别名支持 - 同时支持 path 和 file_path
+    const filePath = req.body.file_path || req.body.path;
+
+    if (!filePath) {
+      return res.status(400).json({
+        error: '缺少必需参数: file_path 或 path'
+      });
+    }
+
+    // 安全检查 - 防止路径遍历攻击
+    const safePath = path.resolve(process.cwd(), filePath);
+    if (!safePath.startsWith(process.cwd())) {
+      await addLog('warn', `文件访问被拒绝 - 路径越界: ${filePath}`);
+      return res.status(403).json({
+        error: '禁止访问该路径'
+      });
+    }
+
+    // 读取文件
+    const content = await fs.readFile(safePath, 'utf-8');
+
+    await addLog('info', `读取文件: ${filePath}`);
+    res.json({
+      success: true,
+      file_path: filePath,
+      content
+    });
+  } catch (error) {
+    await addLog('error', `读取文件失败: ${error.message}`);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 读取目录内容
+router.post('/read-folder', adminAuth, async (req, res) => {
+  try {
+    // 参数别名支持 - 同时支持 path 和 dir_path
+    const dirPath = req.body.dir_path || req.body.path;
+
+    if (!dirPath) {
+      return res.status(400).json({
+        error: '缺少必需参数: dir_path 或 path'
+      });
+    }
+
+    // 安全检查 - 防止路径遍历攻击
+    const safePath = path.resolve(process.cwd(), dirPath);
+    if (!safePath.startsWith(process.cwd())) {
+      await addLog('warn', `目录访问被拒绝 - 路径越界: ${dirPath}`);
+      return res.status(403).json({
+        error: '禁止访问该路径'
+      });
+    }
+
+    // 读取目录
+    const files = await fs.readdir(safePath, { withFileTypes: true });
+
+    const items = files.map(file => ({
+      name: file.name,
+      type: file.isDirectory() ? 'directory' : 'file',
+      path: path.join(dirPath, file.name)
+    }));
+
+    await addLog('info', `读取目录: ${dirPath} (${items.length} 项)`);
+    res.json({
+      success: true,
+      dir_path: dirPath,
+      items
+    });
+  } catch (error) {
+    await addLog('error', `读取目录失败: ${error.message}`);
     res.status(500).json({ error: error.message });
   }
 });

@@ -5,401 +5,36 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>余额查询 - Antigravity API</title>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-
-        body {
-            font-family: 'Inter', sans-serif;
-            background-color: #ffffff;
-            color: #111827;
-            line-height: 1.5;
-            -webkit-font-smoothing: antialiased;
-        }
-
-        .container {
-            max-width: 1200px;
-            margin: 0 auto;
-            padding: 40px 20px;
-        }
-
-        .header {
-            margin-bottom: 60px;
-            text-align: left;
-        }
-
-        .header h1 {
-            font-size: 48px;
-            font-weight: 700;
-            letter-spacing: -0.02em;
-            line-height: 1.1;
-            margin-bottom: 16px;
-            color: #000;
-        }
-
-        .header p {
-            font-size: 20px;
-            color: #6b7280;
-            font-weight: 400;
-        }
-
-        .header-highlight {
-            color: #6366f1;
-        }
-
-        .card {
-            background: #fff;
-            border: 1px solid #e5e7eb;
-            border-radius: 12px;
-            padding: 24px;
-            margin-bottom: 24px;
-            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
-        }
-
-        .card h3 {
-            font-size: 18px;
-            font-weight: 600;
-            margin-bottom: 16px;
-            color: #111827;
-        }
-
-        .form-group {
-            margin-bottom: 20px;
-        }
-
-        label {
-            display: block;
-            font-size: 14px;
-            font-weight: 500;
-            color: #374151;
-            margin-bottom: 8px;
-        }
-
-        input {
-            width: 100%;
-            padding: 12px 16px;
-            border: 1px solid #d1d5db;
-            border-radius: 8px;
-            font-size: 16px;
-            color: #111827;
-            transition: border-color 0.2s, box-shadow 0.2s;
-            font-family: inherit;
-        }
-
-        input:focus {
-            outline: none;
-            border-color: #6366f1;
-            box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
-        }
-
-        button {
-            background-color: #6366f1;
-            color: white;
-            border: none;
-            padding: 12px 24px;
-            border-radius: 8px;
-            font-size: 16px;
-            font-weight: 500;
-            cursor: pointer;
-            transition: background-color 0.2s;
-        }
-
-        button:hover {
-            background-color: #4f46e5;
-        }
-
-        button:disabled {
-            background-color: #9ca3af;
-            cursor: not-allowed;
-        }
-
-        .btn-secondary {
-            background-color: #fff;
-            color: #374151;
-            border: 1px solid #d1d5db;
-        }
-
-        .btn-secondary:hover {
-            background-color: #f9fafb;
-            border-color: #9ca3af;
-        }
-
-        .status-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-            gap: 24px;
-            margin-bottom: 40px;
-        }
-
-        .status-card {
-            background: #fff;
-            border: 1px solid #e5e7eb;
-            border-radius: 12px;
-            padding: 24px;
-            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
-        }
-
-        .status-card h3 {
-            font-size: 14px;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-            color: #6b7280;
-            margin-bottom: 8px;
-            font-weight: 600;
-        }
-
-        .status-card .value {
-            font-size: 32px;
-            font-weight: 700;
-            color: #111827;
-        }
-
-        .status-card .value.green {
-            color: #10b981;
-        }
-
-        .status-card .value.red {
-            color: #ef4444;
-        }
-
-        .status-card .value.orange {
-            color: #f59e0b;
-        }
-
-        .alert {
-            padding: 16px;
-            border-radius: 8px;
-            margin-bottom: 16px;
-            font-size: 14px;
-        }
-
-        .alert-info {
-            background: #eff6ff;
-            color: #1e40af;
-            border: 1px solid #dbeafe;
-        }
-
-        .alert-success {
-            background: #ecfdf5;
-            color: #065f46;
-            border: 1px solid #d1fae5;
-        }
-
-        .alert-error {
-            background: #fef2f2;
-            color: #991b1b;
-            border: 1px solid #fee2e2;
-        }
-
-        .login-overlay {
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(255, 255, 255, 0.95);
-            backdrop-filter: blur(5px);
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            z-index: 1000;
-        }
-
-        .login-overlay.hidden {
-            display: none;
-        }
-
-        .login-box {
-            background: white;
-            padding: 40px;
-            border-radius: 16px;
-            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
-            border: 1px solid #e5e7eb;
-            width: 100%;
-            max-width: 500px;
-            text-align: center;
-        }
-
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 14px;
-        }
-
-        thead {
-            background: #f9fafb;
-        }
-
-        th {
-            padding: 12px;
-            text-align: left;
-            font-weight: 600;
-            color: #374151;
-            border-bottom: 2px solid #e5e7eb;
-        }
-
-        td {
-            padding: 12px;
-            border-bottom: 1px solid #e5e7eb;
-            color: #111827;
-        }
-
-        tr:hover {
-            background: #f9fafb;
-        }
-
-        .pagination {
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            gap: 12px;
-            margin-top: 20px;
-        }
-
-        .pagination button {
-            padding: 8px 16px;
-            font-size: 14px;
-        }
-
-        .pagination span {
-            color: #6b7280;
-            font-size: 14px;
-        }
-
-        .hidden {
-            display: none;
-        }
-
-        .code-block {
-            background: #f3f4f6;
-            padding: 12px 16px;
-            border-radius: 8px;
-            font-family: monospace;
-            font-size: 13px;
-            overflow-x: auto;
-            border: 1px solid #e5e7eb;
-            word-break: break-all;
-        }
-
-        /* 公告样式 */
-        .announcements-container {
-            max-width: 1200px;
-            margin: 20px auto;
-            padding: 0 20px;
-        }
-
-        .announcement {
-            background: white;
-            border-radius: 12px;
-            padding: 20px;
-            margin-bottom: 16px;
-            border-left: 4px solid;
-            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
-        }
-
-        .announcement.info {
-            border-left-color: #3b82f6;
-            background: #eff6ff;
-        }
-
-        .announcement.success {
-            border-left-color: #10b981;
-            background: #f0fdf4;
-        }
-
-        .announcement.warning {
-            border-left-color: #f59e0b;
-            background: #fffbeb;
-        }
-
-        .announcement.danger {
-            border-left-color: #ef4444;
-            background: #fef2f2;
-        }
-
-        .announcement-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: start;
-            margin-bottom: 8px;
-        }
-
-        .announcement-title {
-            font-size: 18px;
-            font-weight: 600;
-            color: #111827;
-        }
-
-        .announcement.info .announcement-title {
-            color: #1e40af;
-        }
-
-        .announcement.success .announcement-title {
-            color: #065f46;
-        }
-
-        .announcement.warning .announcement-title {
-            color: #92400e;
-        }
-
-        .announcement.danger .announcement-title {
-            color: #991b1b;
-        }
-
-        .announcement-pin {
-            background: #fbbf24;
-            color: #78350f;
-            padding: 4px 8px;
-            border-radius: 4px;
-            font-size: 12px;
-            font-weight: 600;
-        }
-
-        .announcement-content {
-            color: #4b5563;
-            line-height: 1.6;
-            white-space: pre-wrap;
-        }
-
-        .announcement-meta {
-            color: #9ca3af;
-            font-size: 12px;
-            margin-top: 12px;
-        }
-    </style>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="css/style.css">
 </head>
 
 <body>
-    <!-- Announcements -->
-    <div id="announcementsContainer" class="announcements-container"></div>
-
     <!-- Login Overlay -->
     <div id="loginOverlay" class="login-overlay">
         <div class="login-box">
-            <h2 style="margin-bottom: 8px; font-size: 28px; font-weight: 700;">余额查询</h2>
-            <p style="color: #6b7280; margin-bottom: 24px;">请输入您的 API 密钥以查看余额和消费历史</p>
+            <h2 style="margin-bottom: 12px; font-size: 1.75rem; font-weight: 700;">余额查询</h2>
+            <p style="color: var(--text-secondary); margin-bottom: 24px;">请输入您的 API 密钥以查看余额和消费历史</p>
             <div class="form-group" style="text-align: left;">
                 <label>API 密钥</label>
                 <input type="password" id="loginApiKey" placeholder="sk-..."
                     onkeypress="if(event.key==='Enter')doLogin()">
             </div>
-            <button onclick="doLogin()" id="loginBtn" style="width: 100%;">查询</button>
-            <div id="loginError" style="color: #ef4444; margin-top: 12px; font-size: 14px;"></div>
+            <button onclick="doLogin()" id="loginBtn" class="btn btn-primary" style="width: 100%;">查询</button>
+            <div id="loginError" class="alert alert-error hidden" style="margin-top: 16px;"></div>
         </div>
     </div>
 
     <!-- Main Content -->
     <div id="mainContent" class="container hidden">
-        <div class="header">
-            <h1>API 余额查询</h1>
-            <p>查看您的<span class="header-highlight">剩余额度</span>和<span class="header-highlight">消费历史</span></p>
-            <div style="margin-top: 20px;">
-                <button onclick="doLogout()" class="btn-secondary" style="font-size: 14px; padding: 8px 16px;">退出</button>
-                <button onclick="loadBalance()" class="btn-secondary" style="font-size: 14px; padding: 8px 16px; margin-left: 8px;">刷新</button>
+        <div class="header header-gradient">
+            <div>
+                <h1>API 余额查询</h1>
+                <p>查看您的剩余额度、消费历史和统计信息</p>
+            </div>
+            <div class="header-actions">
+                <button onclick="doLogout()" class="btn btn-secondary" style="background: rgba(255,255,255,0.2); border: 1px solid rgba(255,255,255,0.3); color: white;">退出</button>
+                <button onclick="loadBalance()" class="btn btn-secondary" style="background: rgba(255,255,255,0.2); border: 1px solid rgba(255,255,255,0.3); color: white;">刷新</button>
             </div>
         </div>
 
@@ -408,7 +43,7 @@
             <div class="status-card">
                 <h3>当前余额</h3>
                 <div class="value" id="balance">-</div>
-                <small style="color: #6b7280; display: block; margin-top: 8px;">
+                <small style="color: var(--text-secondary); display: block; margin-top: 8px;">
                     上限: $<span id="maxBalance">-</span>
                 </small>
             </div>
@@ -423,7 +58,7 @@
             <div class="status-card">
                 <h3>平均费用</h3>
                 <div class="value" id="averageCost">-</div>
-                <small style="color: #6b7280; display: block; margin-top: 8px;">每次请求</small>
+                <small style="color: var(--text-secondary); display: block; margin-top: 8px;">每次请求</small>
             </div>
         </div>
 
@@ -431,15 +66,15 @@
         <div class="card">
             <h3>密钥信息</h3>
             <div style="margin-bottom: 12px;">
-                <strong style="color: #374151;">名称:</strong>
-                <span id="keyName" style="color: #111827; margin-left: 8px;">-</span>
+                <strong style="color: var(--text-secondary);">名称:</strong>
+                <span id="keyName" style="color: var(--text-main); margin-left: 8px; font-weight: 600;">-</span>
             </div>
             <div style="margin-bottom: 12px;">
-                <strong style="color: #374151;">密钥:</strong>
+                <strong style="color: var(--text-secondary);">密钥:</strong>
                 <div class="code-block" id="keyDisplay" style="margin-top: 8px;">-</div>
             </div>
             <div>
-                <strong style="color: #374151;">状态:</strong>
+                <strong style="color: var(--text-secondary);">状态:</strong>
                 <span id="keyStatus" style="margin-left: 8px;">-</span>
             </div>
         </div>
@@ -448,17 +83,17 @@
         <div class="card">
             <h3>Token 使用统计</h3>
             <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px;">
-                <div style="padding: 16px; background: #f9fafb; border-radius: 8px; border: 1px solid #e5e7eb;">
-                    <div style="color: #6b7280; font-size: 14px; margin-bottom: 4px;">输入 Token</div>
-                    <div style="color: #111827; font-size: 24px; font-weight: 600;" id="totalInputTokens">-</div>
+                <div style="padding: 16px; background: var(--gray-100); border-radius: 12px; border: 1px solid var(--border);">
+                    <div style="color: var(--text-secondary); font-size: 0.875rem; margin-bottom: 4px;">输入 Token</div>
+                    <div style="color: var(--text-main); font-size: 1.5rem; font-weight: 700;" id="totalInputTokens">-</div>
                 </div>
-                <div style="padding: 16px; background: #f9fafb; border-radius: 8px; border: 1px solid #e5e7eb;">
-                    <div style="color: #6b7280; font-size: 14px; margin-bottom: 4px;">输出 Token</div>
-                    <div style="color: #111827; font-size: 24px; font-weight: 600;" id="totalOutputTokens">-</div>
+                <div style="padding: 16px; background: var(--gray-100); border-radius: 12px; border: 1px solid var(--border);">
+                    <div style="color: var(--text-secondary); font-size: 0.875rem; margin-bottom: 4px;">输出 Token</div>
+                    <div style="color: var(--text-main); font-size: 1.5rem; font-weight: 700;" id="totalOutputTokens">-</div>
                 </div>
-                <div style="padding: 16px; background: #f9fafb; border-radius: 8px; border: 1px solid #e5e7eb;">
-                    <div style="color: #6b7280; font-size: 14px; margin-bottom: 4px;">总 Token</div>
-                    <div style="color: #111827; font-size: 24px; font-weight: 600;" id="totalTokens">-</div>
+                <div style="padding: 16px; background: var(--gray-100); border-radius: 12px; border: 1px solid var(--border);">
+                    <div style="color: var(--text-secondary); font-size: 0.875rem; margin-bottom: 4px;">总 Token</div>
+                    <div style="color: var(--text-main); font-size: 1.5rem; font-weight: 700;" id="totalTokens">-</div>
                 </div>
             </div>
         </div>
@@ -466,7 +101,7 @@
         <!-- Usage History -->
         <div class="card">
             <h3>消费历史</h3>
-            <div id="usageTableContainer">
+            <div id="usageTableContainer" style="overflow-x: auto;">
                 <table id="usageTable">
                     <thead>
                         <tr>
@@ -480,7 +115,7 @@
                     </thead>
                     <tbody id="usageTableBody">
                         <tr>
-                            <td colspan="6" style="text-align: center; color: #9ca3af; padding: 40px;">
+                            <td colspan="6" style="text-align: center; color: var(--text-secondary); padding: 40px;">
                                 加载中...
                             </td>
                         </tr>
@@ -489,9 +124,9 @@
             </div>
 
             <div class="pagination">
-                <button id="prevBtn" onclick="previousPage()" disabled>上一页</button>
-                <span id="pageInfo">第 1 页</span>
-                <button id="nextBtn" onclick="nextPage()">下一页</button>
+                <button id="prevBtn" onclick="previousPage()" disabled class="btn btn-secondary">上一页</button>
+                <span id="pageInfo" style="color: var(--text-secondary); font-variant-numeric: tabular-nums;">第 1 页</span>
+                <button id="nextBtn" onclick="nextPage()" class="btn btn-secondary">下一页</button>
             </div>
         </div>
     </div>
@@ -502,46 +137,6 @@
         let currentPage = 0;
         const pageSize = 20;
         let totalLogs = 0;
-
-        // 加载公告
-        async function loadAnnouncements() {
-            try {
-                const response = await fetch(`${API_BASE}/admin/announcements/active`);
-                if (!response.ok) return;
-
-                const announcements = await response.json();
-                const container = document.getElementById('announcementsContainer');
-
-                if (announcements.length === 0) {
-                    container.innerHTML = '';
-                    return;
-                }
-
-                container.innerHTML = announcements.map(a => `
-                    <div class="announcement ${a.type || 'info'}">
-                        <div class="announcement-header">
-                            <div class="announcement-title">${escapeHtml(a.title)}</div>
-                            ${a.pinned ? '<div class="announcement-pin">📌 置顶</div>' : ''}
-                        </div>
-                        <div class="announcement-content">${escapeHtml(a.content)}</div>
-                        <div class="announcement-meta">
-                            发布于 ${new Date(a.created).toLocaleString('zh-CN')}
-                        </div>
-                    </div>
-                `).join('');
-            } catch (error) {
-                console.error('加载公告失败:', error);
-            }
-        }
-
-        function escapeHtml(text) {
-            const div = document.createElement('div');
-            div.textContent = text;
-            return div.innerHTML;
-        }
-
-        // 页面加载时加载公告
-        window.addEventListener('DOMContentLoaded', loadAnnouncements);
 
         // Login
         async function doLogin() {
