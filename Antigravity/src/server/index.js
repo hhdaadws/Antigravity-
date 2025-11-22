@@ -230,8 +230,11 @@ app.post('/v1/chat/completions', async (req, res) => {
       res.write('data: [DONE]\n\n');
       res.end();
     } else {
+      // 非流式响应
       let fullContent = '';
       let toolCalls = [];
+      const token = await tokenManager.getNextToken();
+
       await generateAssistantResponse(requestBody, (data) => {
         if (data.type === 'tool_calls') {
           toolCalls = data.tool_calls;
@@ -239,12 +242,12 @@ app.post('/v1/chat/completions', async (req, res) => {
           fullContent += data.content;
         }
       });
-      
+
       const message = { role: 'assistant', content: fullContent };
       if (toolCalls.length > 0) {
         message.tool_calls = toolCalls;
       }
-      
+
       res.json({
         id: `chatcmpl-${Date.now()}`,
         object: 'chat.completion',
@@ -256,6 +259,28 @@ app.post('/v1/chat/completions', async (req, res) => {
           finish_reason: toolCalls.length > 0 ? 'tool_calls' : 'stop'
         }]
       });
+
+      // 计费逻辑 (OpenAI 格式非流式)
+      if (req.apiKey && !req.isSystemKey) {
+        setImmediate(async () => {
+          try {
+            // 估算 token 使用量（因为 generateAssistantResponse 不返回准确的 token 数）
+            const inputTokens = Math.ceil(JSON.stringify(messages).length / 4);
+            const outputTokens = Math.ceil(fullContent.length / 4);
+            const cost = await calculateCost(model, inputTokens, outputTokens);
+
+            await logUsage(req.apiKey, model, inputTokens, outputTokens, null, null);
+            await deductBalance(req.apiKey, cost.totalCost);
+
+            if (token) {
+              tokenManager.addUsage(token, cost.totalCost);
+            }
+            logger.info(`✅ 计费完成 (OpenAI非流式): Key ${req.apiKey.substring(0, 10)}..., $${cost.totalCost.toFixed(6)}`);
+          } catch (e) {
+            logger.error('OpenAI非流式计费失败:', e.message);
+          }
+        });
+      }
     }
   } catch (error) {
     logger.error('生成响应失败:', error.message);
@@ -606,6 +631,9 @@ app.post('/v1beta/models/:model\\:generateContent', async (req, res) => {
     }
 
     if (finalResponse) {
+      logger.info(`[DEBUG] finalResponse 内容:`, JSON.stringify(finalResponse).substring(0, 500));
+      logger.info(`[DEBUG] finalResponse.usageMetadata:`, finalResponse.usageMetadata);
+      logger.info(`[DEBUG] 计费检查 - req.apiKey: ${!!req.apiKey}, isSystemKey: ${req.isSystemKey}, hasUsageMeta: ${!!finalResponse.usageMetadata}`);
       res.json(finalResponse);
 
       // 计费逻辑 (非流式)

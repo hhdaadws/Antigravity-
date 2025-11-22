@@ -119,6 +119,7 @@ class TokenManager {
 
   saveToFile() {
     try {
+      log.info(`[DEBUG] saveToFile 开始 - filePath: ${this.filePath}`);
       // 使用缓存数据，减少磁盘读取
       let allTokens = this.cachedData;
       if (!allTokens) {
@@ -128,13 +129,18 @@ class TokenManager {
 
       this.tokens.forEach(memToken => {
         const index = allTokens.findIndex(t => t.refresh_token === memToken.refresh_token);
-        if (index !== -1) allTokens[index] = memToken;
+        if (index !== -1) {
+          log.info(`[DEBUG] saveToFile - 更新 token ${index}, dailyCost: ${memToken.dailyCost}, totalCost: ${memToken.totalCost}`);
+          allTokens[index] = memToken;
+        }
       });
 
       fs.writeFileSync(this.filePath, JSON.stringify(allTokens, null, 2), 'utf8');
       this.cachedData = allTokens; // 更新缓存
+      log.info(`[DEBUG] saveToFile 完成`);
     } catch (error) {
       log.error('保存文件失败:', error.message);
+      log.error('[DEBUG] saveToFile 错误堆栈:', error.stack);
     }
   }
 
@@ -249,9 +255,16 @@ class TokenManager {
    */
   addUsage(token, cost) {
     try {
+      log.info(`[DEBUG] addUsage 被调用 - cost: ${cost}, refresh_token: ${token?.refresh_token?.substring(0, 20)}...`);
+
       // 在内存中找到最新的 token 对象引用
       const found = this.tokens.find(t => t.refresh_token === token.refresh_token);
-      if (!found) return;
+      if (!found) {
+        log.warn(`[DEBUG] addUsage - 未找到匹配的 token! tokens数组长度: ${this.tokens.length}`);
+        return;
+      }
+
+      log.info(`[DEBUG] addUsage - 找到 token, 当前 dailyCost: ${found.dailyCost}, totalCost: ${found.totalCost}`);
 
       // 初始化统计字段
       found.totalCost = found.totalCost || 0;
@@ -274,9 +287,13 @@ class TokenManager {
       found.totalCost += cost;
       found.dailyCost += cost;
 
+      log.info(`[DEBUG] addUsage - 更新后 dailyCost: ${found.dailyCost}, totalCost: ${found.totalCost}`);
+
       this.saveToFile();
+      log.info(`[DEBUG] addUsage - saveToFile 已调用`);
     } catch (error) {
       log.error('记录token费用失败:', error.message);
+      log.error('[DEBUG] addUsage 错误堆栈:', error.stack);
     }
   }
 

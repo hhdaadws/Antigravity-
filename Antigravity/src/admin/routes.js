@@ -581,9 +581,13 @@ router.post('/tokens/:index/restore', async (req, res) => {
     delete account.disabledUntil;
     delete account.quotaExhausted;
 
-    // 保存
+    // 保存到正确的文件 (accounts.json)
     const fs = await import('fs/promises');
-    await fs.writeFile('./data/google_tokens.json', JSON.stringify(accounts, null, 2));
+    const accountsPath = path.join(process.cwd(), 'data', 'accounts.json');
+    await fs.writeFile(accountsPath, JSON.stringify(accounts, null, 2));
+
+    // 强制刷新 token 管理器以使更改立即生效
+    tokenManager.forceReload();
 
     await addLog('info', `手动恢复 Token ${index} (配额限制已解除)`);
     res.json({ success: true, message: 'Token 已恢复' });
@@ -1606,6 +1610,93 @@ router.post('/write-file', adminAuth, async (req, res) => {
   } catch (error) {
     await addLog('error', `写入文件失败: ${error.message}`);
     res.status(500).json({ error: error.message });
+  }
+});
+
+// 执行受限的 Shell 命令
+router.post('/run-command', adminAuth, async (req, res) => {
+  try {
+    const { command } = req.body;
+
+    if (!command) {
+      return res.status(400).json({
+        error: '缺少必需参数: command'
+      });
+    }
+
+    // 命令白名单 - 只允许安全的命令
+    const allowedCommands = [
+      /^git\s+/,           // git 命令
+      /^npm\s+/,           // npm 命令
+      /^node\s+/,          // node 命令
+      /^ls(\s+|$)/,        // ls 命令
+      /^dir(\s+|$)/,       // dir 命令 (Windows)
+      /^pwd$/,             // pwd 命令
+      /^cd\s+/,            // cd 命令
+      /^echo\s+/           // echo 命令
+    ];
+
+    // 检查命令是否在白名单中
+    const isAllowed = allowedCommands.some(pattern => pattern.test(command));
+
+    if (!isAllowed) {
+      await addLog('warn', `命令被拒绝 - 不在白名单中: ${command}`);
+      return res.status(403).json({
+        error: '不允许执行此命令。仅允许: git, npm, node, ls, dir, pwd, cd, echo'
+      });
+    }
+
+    // 检查危险模式
+    const dangerousPatterns = [
+      /rm\s+-rf/,          // rm -rf
+      /del\s+\/[SF]/,      // Windows del /S /F
+      /format/i,           // format 命令
+      />.*passwd/,         // 重定向到 passwd
+      />\s*\/dev\//,       // 重定向到设备文件
+      /\|\s*sh/,           // 管道到 sh
+      /\|\s*bash/,         // 管道到 bash
+      /`.*`/,              // 反引号命令替换
+      /\$\(.*\)/          // $() 命令替换
+    ];
+
+    const isDangerous = dangerousPatterns.some(pattern => pattern.test(command));
+
+    if (isDangerous) {
+      await addLog('error', `危险命令被阻止: ${command}`);
+      return res.status(403).json({
+        error: '检测到潜在危险操作，命令被阻止'
+      });
+    }
+
+    // 执行命令
+    const { exec } = await import('child_process');
+    const { promisify } = await import('util');
+    const execAsync = promisify(exec);
+
+    await addLog('info', `执行命令: ${command}`);
+
+    const { stdout, stderr } = await execAsync(command, {
+      cwd: process.cwd(),
+      timeout: 30000, // 30秒超时
+      maxBuffer: 1024 * 1024 // 1MB 输出限制
+    });
+
+    res.json({
+      success: true,
+      stdout: stdout || '',
+      stderr: stderr || '',
+      command
+    });
+
+  } catch (error) {
+    await addLog('error', `命令执行失败: ${error.message}`);
+
+    // 返回错误信息，但要安全地处理
+    res.status(500).json({
+      error: error.message,
+      stdout: error.stdout || '',
+      stderr: error.stderr || ''
+    });
   }
 });
 
