@@ -12,7 +12,6 @@ import { loadSettings, saveSettings } from './settings_manager.js';
 import tokenManager from '../auth/token_manager.js';
 import proxyManager from './proxy_manager.js';
 import { loadAnnouncements, createAnnouncement, updateAnnouncement, deleteAnnouncement, getActiveAnnouncements, getAnnouncementById } from './announcement_manager.js';
-import { loadModels, fetchAndSaveModels, updateModelQuota, toggleModel, getModelStats, cleanupOldUsage, setUserModelQuota, getUserModelQuota } from './model_manager.js';
 import { getSecurityStats, unbanIP, unbanDevice, isIPBanned, isDeviceBanned } from './security_manager.js';
 import { isUserBanned, banUserFromSharing, unbanUser, recordShareUsage, getUserAverageUsage, checkAndBanAbuser, addToTokenBlacklist, removeFromTokenBlacklist, isUserBlacklisted, getTokenBlacklist, createVote, castVote, addVoteComment, processVoteResult, getActiveVotes, getVoteById, getUserVoteHistory, getAllVotes, getUserShareStatus } from './share_manager.js';
 import { registerUser, loginUser, getUserById, getUserByUsername, generateUserApiKey, deleteUserApiKey, getUserApiKeys, validateUserApiKey, updateUser, deleteUser, getUserStats, getAllUsers, toggleUserStatus, loginOrRegisterWithGoogle, getUserTokens, addUserToken, deleteUserToken, getUserAvailableToken } from './user_manager.js';
@@ -807,114 +806,6 @@ router.delete('/announcements/:id', async (req, res) => {
   }
 });
 
-// ========== 模型管理 API ==========
-
-// 获取所有模型
-router.get('/models', async (req, res) => {
-  try {
-    const models = await loadModels();
-    res.json(models);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// 自动获取并保存模型列表
-router.post('/models/fetch', async (req, res) => {
-  try {
-    const models = await fetchAndSaveModels();
-    await addLog('success', `成功获取并保存了 ${models.length} 个模型`);
-    res.json({ success: true, models });
-  } catch (error) {
-    await addLog('error', `获取模型失败: ${error.message}`);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// 更新模型配额
-router.patch('/models/:modelId/quota', async (req, res) => {
-  try {
-    const { modelId } = req.params;
-    const { quota } = req.body;
-
-    if (quota === undefined || quota < 0) {
-      return res.status(400).json({ error: '请提供有效的配额值' });
-    }
-
-    const model = await updateModelQuota(modelId, quota);
-    await addLog('info', `模型 ${modelId} 配额已更新为 ${quota}`);
-    res.json({ success: true, model });
-  } catch (error) {
-    await addLog('error', `更新模型配额失败: ${error.message}`);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// 启用/禁用模型
-router.patch('/models/:modelId/toggle', async (req, res) => {
-  try {
-    const { modelId } = req.params;
-    const { enabled } = req.body;
-
-    const model = await toggleModel(modelId, enabled);
-    await addLog('info', `模型 ${modelId} 已${enabled ? '启用' : '禁用'}`);
-    res.json({ success: true, model });
-  } catch (error) {
-    await addLog('error', `切换模型状态失败: ${error.message}`);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// 获取模型统计信息
-router.get('/models/stats', async (req, res) => {
-  try {
-    const stats = await getModelStats();
-    res.json(stats);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// 清理过期使用记录
-router.post('/models/cleanup', async (req, res) => {
-  try {
-    const cleaned = await cleanupOldUsage();
-    await addLog('info', `清理了 ${cleaned} 条过期的模型使用记录`);
-    res.json({ success: true, cleaned });
-  } catch (error) {
-    await addLog('error', `清理失败: ${error.message}`);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// 设置用户特定模型配额
-router.post('/models/user-quota', async (req, res) => {
-  try {
-    const { userId, modelId, quota } = req.body;
-
-    if (!userId || !modelId || quota === undefined) {
-      return res.status(400).json({ error: '请提供 userId, modelId 和 quota' });
-    }
-
-    const result = await setUserModelQuota(userId, modelId, quota);
-    await addLog('info', `为用户 ${userId} 设置模型 ${modelId} 配额为 ${quota}`);
-    res.json({ success: true, ...result });
-  } catch (error) {
-    await addLog('error', `设置用户模型配额失败: ${error.message}`);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// 获取用户特定模型配额
-router.get('/models/user-quota/:userId/:modelId', async (req, res) => {
-  try {
-    const { userId, modelId } = req.params;
-    const quota = await getUserModelQuota(userId, modelId);
-    res.json({ userId, modelId, quota });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
 
 // ========== 安全管理 API ==========
 
