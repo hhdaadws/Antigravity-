@@ -11,6 +11,7 @@ import { createSession, validateSession, destroySession, verifyPassword, adminAu
 import { loadSettings, saveSettings } from './settings_manager.js';
 import tokenManager from '../auth/token_manager.js';
 import proxyManager from './proxy_manager.js';
+import { loadAnnouncements, createAnnouncement, updateAnnouncement, deleteAnnouncement, getActiveAnnouncements, getAnnouncementById } from './announcement_manager.js';
 
 // 配置文件上传
 const upload = multer({ dest: 'uploads/' });
@@ -100,6 +101,16 @@ router.get('/user/usage', async (req, res) => {
 
     const result = await getUsageByKey(apiKey, limit, offset);
     res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 获取启用的公告（用户端，不需要认证）
+router.get('/announcements/active', async (req, res) => {
+  try {
+    const announcements = await getActiveAnnouncements();
+    res.json(announcements);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -512,48 +523,6 @@ router.patch('/tokens/:index/proxy', async (req, res) => {
   }
 });
 
-// ========== Session 管理 API ==========
-
-// 获取所有 session 绑定信息
-router.get('/sessions', adminAuth, async (req, res) => {
-  try {
-    const bindings = tokenManager.getSessionBindings();
-    res.json(bindings);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// 释放指定 session
-router.delete('/sessions/:sessionId', adminAuth, async (req, res) => {
-  try {
-    const { sessionId } = req.params;
-    tokenManager.releaseSession(sessionId);
-    await addLog('info', `Session ${sessionId.substring(0, 8)}... 已手动释放`);
-    res.json({ success: true, message: 'Session 已释放' });
-  } catch (error) {
-    await addLog('error', `释放 Session 失败: ${error.message}`);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// 释放所有 session
-router.delete('/sessions', adminAuth, async (req, res) => {
-  try {
-    const bindings = tokenManager.getSessionBindings();
-    let count = 0;
-    for (const binding of bindings) {
-      tokenManager.releaseSession(binding.sessionId);
-      count++;
-    }
-    await addLog('info', `已手动释放 ${count} 个 Session`);
-    res.json({ success: true, message: `已释放 ${count} 个 Session` });
-  } catch (error) {
-    await addLog('error', `批量释放 Session 失败: ${error.message}`);
-    res.status(500).json({ error: error.message });
-  }
-});
-
 // ========== 余额管理和使用日志 API ==========
 
 // 更新密钥余额上限
@@ -725,6 +694,67 @@ router.post('/pricing/reset', async (req, res) => {
     });
   } catch (error) {
     await addLog('error', `重置定价失败: ${error.message}`);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ========== 公告管理 API ==========
+
+// 获取所有公告（管理员）
+router.get('/announcements', async (req, res) => {
+  try {
+    const announcements = await loadAnnouncements();
+    res.json(announcements);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 获取单个公告
+router.get('/announcements/:id', async (req, res) => {
+  try {
+    const announcement = await getAnnouncementById(req.params.id);
+    if (!announcement) {
+      return res.status(404).json({ error: '公告不存在' });
+    }
+    res.json(announcement);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 创建公告
+router.post('/announcements', async (req, res) => {
+  try {
+    const announcement = await createAnnouncement(req.body);
+    await addLog('success', `公告已创建: ${req.body.title}`);
+    res.json({ success: true, announcement });
+  } catch (error) {
+    await addLog('error', `创建公告失败: ${error.message}`);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 更新公告
+router.patch('/announcements/:id', async (req, res) => {
+  try {
+    const announcement = await updateAnnouncement(req.params.id, req.body);
+    await addLog('info', `公告已更新: ${announcement.title}`);
+    res.json({ success: true, announcement });
+  } catch (error) {
+    await addLog('error', `更新公告失败: ${error.message}`);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 删除公告
+router.delete('/announcements/:id', async (req, res) => {
+  try {
+    await deleteAnnouncement(req.params.id);
+    await addLog('warn', `公告已删除: ${req.params.id}`);
+    res.json({ success: true });
+  } catch (error) {
+    await addLog('error', `删除公告失败: ${error.message}`);
     res.status(500).json({ error: error.message });
   }
 });
