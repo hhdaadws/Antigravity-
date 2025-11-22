@@ -13,6 +13,7 @@ import tokenManager from '../auth/token_manager.js';
 import proxyManager from './proxy_manager.js';
 import { loadAnnouncements, createAnnouncement, updateAnnouncement, deleteAnnouncement, getActiveAnnouncements, getAnnouncementById } from './announcement_manager.js';
 import { loadModels, fetchAndSaveModels, updateModelQuota, toggleModel, getModelStats, cleanupOldUsage, setUserModelQuota, getUserModelQuota } from './model_manager.js';
+import { getSecurityStats, unbanIP, unbanDevice, isIPBanned, isDeviceBanned } from './security_manager.js';
 
 // 配置文件上传
 const upload = multer({ dest: 'uploads/' });
@@ -865,6 +866,82 @@ router.get('/models/user-quota/:userId/:modelId', async (req, res) => {
     const quota = await getUserModelQuota(userId, modelId);
     res.json({ userId, modelId, quota });
   } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ========== 安全管理 API ==========
+
+// 获取安全统计信息
+router.get('/security/stats', async (req, res) => {
+  try {
+    const stats = await getSecurityStats();
+    res.json(stats);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 检查IP是否被封禁
+router.get('/security/check-ip/:ip', async (req, res) => {
+  try {
+    const { ip } = req.params;
+    const banned = await isIPBanned(ip);
+    res.json({ ip, banned });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 检查设备是否被封禁
+router.get('/security/check-device/:deviceId', async (req, res) => {
+  try {
+    const { deviceId } = req.params;
+    const banned = await isDeviceBanned(deviceId);
+    res.json({ deviceId, banned });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 解封IP
+router.post('/security/unban-ip', async (req, res) => {
+  try {
+    const { ip } = req.body;
+    if (!ip) {
+      return res.status(400).json({ error: '请提供 IP 地址' });
+    }
+
+    const result = await unbanIP(ip);
+    if (result) {
+      await addLog('info', `IP ${ip} 已解封`);
+      res.json({ success: true, message: 'IP 已解封' });
+    } else {
+      res.status(404).json({ error: 'IP 未被封禁' });
+    }
+  } catch (error) {
+    await addLog('error', `解封 IP 失败: ${error.message}`);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 解封设备
+router.post('/security/unban-device', async (req, res) => {
+  try {
+    const { deviceId } = req.body;
+    if (!deviceId) {
+      return res.status(400).json({ error: '请提供设备 ID' });
+    }
+
+    const result = await unbanDevice(deviceId);
+    if (result) {
+      await addLog('info', `设备 ${deviceId} 已解封`);
+      res.json({ success: true, message: '设备已解封' });
+    } else {
+      res.status(404).json({ error: '设备未被封禁' });
+    }
+  } catch (error) {
+    await addLog('error', `解封设备失败: ${error.message}`);
     res.status(500).json({ error: error.message });
   }
 });
