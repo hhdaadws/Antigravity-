@@ -447,6 +447,28 @@ class TokenManager {
     return bindings;
   }
 
+  /**
+   * 获取任何一个可用的 token（不管是否被占用）
+   * 用于轻量级操作，如获取模型列表
+   * @returns {Promise<Object>} - Token对象
+   */
+  async getAnyEnabledToken() {
+    await this.loadTokens();
+
+    // 查找第一个启用且未因配额耗尽而被禁用的 token
+    for (const token of this.tokens) {
+      if (token.enable !== false && !this.isTokenDisabledByQuota(token)) {
+        // 刷新 token 如果需要
+        if (this.isExpired(token)) {
+          await this.refreshToken(token);
+        }
+        return token;
+      }
+    }
+
+    throw new Error('No enabled tokens available.');
+  }
+
   // ========== 兼容旧接口 ==========
 
   /**

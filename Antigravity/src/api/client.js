@@ -2,8 +2,8 @@ import tokenManager from '../auth/token_manager.js';
 import config from '../config/config.js';
 
 export async function generateAssistantResponse(requestBody, callback) {
-  const token = await tokenManager.getToken();
-  
+  const token = await tokenManager.getAnyEnabledToken();
+
   if (!token) {
     throw new Error('没有可用的token，请运行 npm run login 获取token');
   }
@@ -92,8 +92,8 @@ export async function generateAssistantResponse(requestBody, callback) {
 }
 
 export async function getAvailableModels() {
-  const token = await tokenManager.getToken();
-  
+  const token = await tokenManager.getAnyEnabledToken();
+
   if (!token) {
     throw new Error('没有可用的token，请运行 npm run login 获取token');
   }
