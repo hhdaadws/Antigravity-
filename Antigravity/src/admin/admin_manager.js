@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import db from '../database/db.js';
 import logger from '../utils/logger.js';
+import { createSession } from './session.js';
 
 // 密码哈希
 function hashPassword(password) {
@@ -14,11 +15,6 @@ function verifyPassword(password, storedHash) {
   const [salt, hash] = storedHash.split(':');
   const verifyHash = crypto.pbkdf2Sync(password, salt, 10000, 64, 'sha512').toString('hex');
   return hash === verifyHash;
-}
-
-// 生成会话Token
-function generateSessionToken() {
-  return crypto.randomBytes(32).toString('hex');
 }
 
 // 检查系统是否已初始化
@@ -113,8 +109,8 @@ export function adminLogin(username, password) {
     const updateStmt = db.prepare('UPDATE admins SET last_login = ? WHERE id = ?');
     updateStmt.run(Date.now(), admin.id);
 
-    // 生成会话Token
-    const sessionToken = generateSessionToken();
+    // 创建会话并获取Token
+    const sessionToken = createSession();
 
     logger.info(`管理员登录: ${username}`);
 
