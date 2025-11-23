@@ -7,7 +7,8 @@
   "scripts": {
     "start": "node src/server/index.js",
     "login": "node scripts/oauth-server.js",
-    "dev": "node src/server/index.js"
+    "dev": "node src/server/index.js",
+    "migrate": "node scripts/migrate-to-database.js"
   },
   "keywords": [
     "antigravity",
@@ -20,6 +21,7 @@
   "dependencies": {
     "adm-zip": "^0.5.16",
     "archiver": "^7.0.1",
+    "better-sqlite3": "^12.4.6",
     "express": "^5.1.0",
     "multer": "^2.0.2",
     "socks-proxy-agent": "^8.0.5"
