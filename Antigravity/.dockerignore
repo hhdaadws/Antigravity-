@@ -1,0 +1,56 @@
+# Node modules
+node_modules
+npm-debug.log
+
+# Data files (will be mounted as volume)
+data/*.json
+data/*.db
+data/*.db-shm
+data/*.db-wal
+data/json_backup_*
+
+# Git
+.git
+.gitignore
+.gitattributes
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+logs
+*.log
+
+# Test
+test
+*.test.js
+coverage
+
+# Documentation
+README.md
+CLAUDE.md
+LICENSE
+
+# CI/CD
+.github
+.gitlab-ci.yml
+.travis.yml
+
+# Docker
+Dockerfile
+.dockerignore
+docker-compose.yml
+
+# Misc
+tmp
+temp
+.env.local
+.env.*.local
