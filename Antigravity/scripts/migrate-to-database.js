@@ -214,12 +214,12 @@ function migrateData() {
         log.timestamp,
         log.keyId,
         log.model,
-        log.inputTokens,
-        log.outputTokens,
-        log.totalTokens,
-        log.cost,
-        log.inputCost,
-        log.outputCost,
+        log.inputTokens || 0,
+        log.outputTokens || 0,
+        log.totalTokens || 0,
+        log.cost || 0,
+        log.inputCost || 0,
+        log.outputCost || 0,
         log.sessionId || null,
         log.requestId || null
       );
@@ -314,14 +314,14 @@ function migrateData() {
     for (const proxy of proxies) {
       insertProxy.run(
         proxy.id,
-        proxy.name,
-        proxy.type,
+        proxy.name || 'Unnamed Proxy',
+        proxy.type || proxy.protocol || 'http',
         proxy.host,
-        proxy.port,
+        proxy.port || 8080,
         proxy.username || null,
         proxy.password || null,
         proxy.enabled !== false ? 1 : 0,
-        proxy.created
+        proxy.created || Date.now()
       );
     }
   });
