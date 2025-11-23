@@ -1,8 +1,5 @@
-import fs from 'fs/promises';
-import path from 'path';
 import logger from '../utils/logger.js';
-
-const PROXY_POOL_FILE = path.join(process.cwd(), 'data', 'proxy_pool.json');
+import db from '../database/db.js';
 
 // 代理池管理类
 class ProxyManager {
@@ -14,101 +11,236 @@ class ProxyManager {
   // 加载代理池
   async loadProxyPool() {
     try {
-      const data = await fs.readFile(PROXY_POOL_FILE, 'utf-8');
-      this.proxyPool = JSON.parse(data);
+      const stmt = db.prepare('SELECT * FROM proxies ORDER BY id');
+      this.proxyPool = stmt.all().map(row => ({
+        id: row.id,
+        name: row.name,
+        protocol: row.type,
+        host: row.host,
+        port: row.port,
+        username: row.username,
+        password: row.password,
+        enabled: row.enabled === 1,
+        created: row.created,
+        lastTested: null,
+        testStatus: null
+      }));
       logger.info(`成功加载 ${this.proxyPool.length} 个代理`);
     } catch (error) {
-      if (error.code === 'ENOENT') {
-        // 文件不存在，创建空代理池
-        this.proxyPool = [];
-        await this.saveProxyPool();
-        logger.info('代理池文件不存在，已创建空代理池');
-      } else {
-        logger.error('加载代理池失败:', error.message);
-        this.proxyPool = [];
-      }
+      logger.error('加载代理池失败:', error.message);
+      this.proxyPool = [];
     }
   }
 
-  // 保存代理池
+  // 保存代理池 - Not needed anymore
   async saveProxyPool() {
-    try {
-      const dir = path.dirname(PROXY_POOL_FILE);
-      try {
-        await fs.access(dir);
-      } catch {
-        await fs.mkdir(dir, { recursive: true });
-      }
-      await fs.writeFile(PROXY_POOL_FILE, JSON.stringify(this.proxyPool, null, 2), 'utf-8');
-      logger.info('代理池已保存');
-    } catch (error) {
-      logger.error('保存代理池失败:', error.message);
-      throw error;
-    }
+    logger.warn('saveProxyPool called - this should be handled by individual DB operations');
   }
 
   // 获取所有代理
   getAllProxies() {
-    return this.proxyPool;
+    // Reload from database to get latest data
+    const stmt = db.prepare('SELECT * FROM proxies ORDER BY id');
+    return stmt.all().map(row => ({
+      id: row.id,
+      name: row.name,
+      protocol: row.type,
+      host: row.host,
+      port: row.port,
+      username: row.username,
+      password: row.password,
+      enabled: row.enabled === 1,
+      created: row.created,
+      lastTested: null,
+      testStatus: null
+    }));
   }
 
   // 添加代理
   async addProxy(proxyConfig) {
-    const proxy = {
-      id: Date.now().toString(),
-      name: proxyConfig.name || '未命名代理',
-      protocol: proxyConfig.protocol || 'socks5',
-      host: proxyConfig.host,
-      port: proxyConfig.port,
-      username: proxyConfig.username || null,
-      password: proxyConfig.password || null,
-      enabled: proxyConfig.enabled !== false,
-      created: new Date().toISOString(),
-      lastTested: null,
-      testStatus: null
-    };
+    try {
+      const id = Date.now().toString();
+      const created = new Date().toISOString();
 
-    this.proxyPool.push(proxy);
-    await this.saveProxyPool();
-    logger.info(`代理已添加: ${proxy.name} (${proxy.host}:${proxy.port})`);
-    return proxy;
+      const insertStmt = db.prepare(`
+        INSERT INTO proxies (id, name, type, host, port, username, password, enabled, created)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+
+      insertStmt.run(
+        id,
+        proxyConfig.name || '未命名代理',
+        proxyConfig.protocol || 'socks5',
+        proxyConfig.host,
+        proxyConfig.port,
+        proxyConfig.username || null,
+        proxyConfig.password || null,
+        proxyConfig.enabled !== false ? 1 : 0,
+        created
+      );
+
+      const proxy = {
+        id,
+        name: proxyConfig.name || '未命名代理',
+        protocol: proxyConfig.protocol || 'socks5',
+        host: proxyConfig.host,
+        port: proxyConfig.port,
+        username: proxyConfig.username || null,
+        password: proxyConfig.password || null,
+        enabled: proxyConfig.enabled !== false,
+        created,
+        lastTested: null,
+        testStatus: null
+      };
+
+      this.proxyPool.push(proxy);
+      logger.info(`代理已添加: ${proxy.name} (${proxy.host}:${proxy.port})`);
+      return proxy;
+    } catch (error) {
+      logger.error('添加代理失败:', error);
+      throw error;
+    }
   }
 
   // 更新代理
   async updateProxy(id, updates) {
-    const index = this.proxyPool.findIndex(p => p.id === id);
-    if (index === -1) {
-      throw new Error('代理不存在');
+    try {
+      const stmt = db.prepare('SELECT * FROM proxies WHERE id = ?');
+      const existing = stmt.get(id);
+
+      if (!existing) {
+        throw new Error('代理不存在');
+      }
+
+      // Build update query dynamically
+      const fields = [];
+      const values = [];
+
+      if (updates.name !== undefined) {
+        fields.push('name = ?');
+        values.push(updates.name);
+      }
+      if (updates.protocol !== undefined) {
+        fields.push('type = ?');
+        values.push(updates.protocol);
+      }
+      if (updates.host !== undefined) {
+        fields.push('host = ?');
+        values.push(updates.host);
+      }
+      if (updates.port !== undefined) {
+        fields.push('port = ?');
+        values.push(updates.port);
+      }
+      if (updates.username !== undefined) {
+        fields.push('username = ?');
+        values.push(updates.username);
+      }
+      if (updates.password !== undefined) {
+        fields.push('password = ?');
+        values.push(updates.password);
+      }
+      if (updates.enabled !== undefined) {
+        fields.push('enabled = ?');
+        values.push(updates.enabled ? 1 : 0);
+      }
+
+      if (fields.length > 0) {
+        values.push(id);
+        const updateStmt = db.prepare(`UPDATE proxies SET ${fields.join(', ')} WHERE id = ?`);
+        updateStmt.run(...values);
+      }
+
+      // Get updated proxy
+      const updated = stmt.get(id);
+      const proxy = {
+        id: updated.id,
+        name: updated.name,
+        protocol: updated.type,
+        host: updated.host,
+        port: updated.port,
+        username: updated.username,
+        password: updated.password,
+        enabled: updated.enabled === 1,
+        created: updated.created,
+        lastTested: null,
+        testStatus: null
+      };
+
+      // Update in memory pool
+      const index = this.proxyPool.findIndex(p => p.id === id);
+      if (index !== -1) {
+        this.proxyPool[index] = proxy;
+      }
+
+      logger.info(`代理已更新: ${id}`);
+      return proxy;
+    } catch (error) {
+      logger.error('更新代理失败:', error);
+      throw error;
     }
-
-    this.proxyPool[index] = {
-      ...this.proxyPool[index],
-      ...updates,
-      id: this.proxyPool[index].id, // 保持ID不变
-      created: this.proxyPool[index].created // 保持创建时间不变
-    };
-
-    await this.saveProxyPool();
-    logger.info(`代理已更新: ${id}`);
-    return this.proxyPool[index];
   }
 
   // 删除代理
   async deleteProxy(id) {
-    const index = this.proxyPool.findIndex(p => p.id === id);
-    if (index === -1) {
-      throw new Error('代理不存在');
-    }
+    try {
+      const stmt = db.prepare('SELECT * FROM proxies WHERE id = ?');
+      const proxy = stmt.get(id);
 
-    const deleted = this.proxyPool.splice(index, 1)[0];
-    await this.saveProxyPool();
-    logger.info(`代理已删除: ${deleted.name}`);
-    return deleted;
+      if (!proxy) {
+        throw new Error('代理不存在');
+      }
+
+      const deleteStmt = db.prepare('DELETE FROM proxies WHERE id = ?');
+      deleteStmt.run(id);
+
+      // Remove from memory pool
+      const index = this.proxyPool.findIndex(p => p.id === id);
+      if (index !== -1) {
+        this.proxyPool.splice(index, 1);
+      }
+
+      logger.info(`代理已删除: ${proxy.name}`);
+      return {
+        id: proxy.id,
+        name: proxy.name,
+        protocol: proxy.type,
+        host: proxy.host,
+        port: proxy.port
+      };
+    } catch (error) {
+      logger.error('删除代理失败:', error);
+      throw error;
+    }
   }
 
   // 根据ID获取代理
   getProxyById(id) {
-    return this.proxyPool.find(p => p.id === id);
+    try {
+      const stmt = db.prepare('SELECT * FROM proxies WHERE id = ?');
+      const proxy = stmt.get(id);
+
+      if (!proxy) {
+        return null;
+      }
+
+      return {
+        id: proxy.id,
+        name: proxy.name,
+        protocol: proxy.type,
+        host: proxy.host,
+        port: proxy.port,
+        username: proxy.username,
+        password: proxy.password,
+        enabled: proxy.enabled === 1,
+        created: proxy.created,
+        lastTested: null,
+        testStatus: null
+      };
+    } catch (error) {
+      logger.error('获取代理失败:', error);
+      return null;
+    }
   }
 
   // 创建代理Agent
@@ -175,7 +307,7 @@ class ProxyManager {
         timestamp: new Date().toISOString()
       };
 
-      // 更新代理池中的测试状态
+      // Update proxy test status in database
       if (proxyConfig.id) {
         await this.updateProxy(proxyConfig.id, {
           lastTested: result.timestamp,
@@ -195,7 +327,7 @@ class ProxyManager {
         timestamp: new Date().toISOString()
       };
 
-      // 更新代理池中的测试状态
+      // Update proxy test status in database
       if (proxyConfig.id) {
         try {
           await this.updateProxy(proxyConfig.id, {
@@ -214,7 +346,9 @@ class ProxyManager {
   // 批量测试所有代理
   async testAllProxies() {
     const results = [];
-    for (const proxy of this.proxyPool) {
+    const proxies = this.getAllProxies();
+
+    for (const proxy of proxies) {
       if (proxy.enabled) {
         const result = await this.testProxy(proxy);
         results.push({

@@ -1,73 +1,111 @@
-import fs from 'fs/promises';
 import AdmZip from 'adm-zip';
 import path from 'path';
 import { spawn } from 'child_process';
+import https from 'https';
 import logger from '../utils/logger.js';
 import tokenManager from '../auth/token_manager.js';
+import db from '../database/db.js';
 
-const ACCOUNTS_FILE = path.join(process.cwd(), 'data', 'accounts.json');
-
-// 读取所有账号
+// 读取所有账号 (admin-managed tokens without user_id)
 export async function loadAccounts() {
   try {
-    const data = await fs.readFile(ACCOUNTS_FILE, 'utf-8');
-    return JSON.parse(data);
+    const stmt = db.prepare('SELECT * FROM google_tokens WHERE user_id IS NULL ORDER BY id');
+    const rows = stmt.all();
+
+    return rows.map(row => ({
+      access_token: row.access_token,
+      refresh_token: row.refresh_token,
+      expires_in: row.expires_in,
+      timestamp: row.timestamp,
+      enable: row.enabled === 1,
+      proxyId: row.proxy_id,
+      email: row.email,
+      disabledUntil: row.disabled_until,
+      quotaExhausted: row.quota_exhausted === 1,
+      dailyCost: row.daily_cost || 0,
+      totalCost: row.total_cost || 0
+    }));
   } catch (error) {
-    if (error.code === 'ENOENT') {
-      return [];
-    }
-    throw error;
+    logger.error('加载账号失败:', error);
+    return [];
   }
 }
 
-// 保存账号
+// 保存账号 - Not needed anymore, kept for compatibility
 async function saveAccounts(accounts) {
-  const dir = path.dirname(ACCOUNTS_FILE);
-  try {
-    await fs.access(dir);
-  } catch {
-    await fs.mkdir(dir, { recursive: true });
-  }
-  await fs.writeFile(ACCOUNTS_FILE, JSON.stringify(accounts, null, 2), 'utf-8');
+  logger.warn('saveAccounts called - this should be handled by individual DB operations');
 }
 
 // 删除账号
 export async function deleteAccount(index) {
-  const accounts = await loadAccounts();
-  if (index < 0 || index >= accounts.length) {
-    throw new Error('无效的账号索引');
+  try {
+    // Get all admin tokens (user_id IS NULL) ordered by id
+    const stmt = db.prepare('SELECT id FROM google_tokens WHERE user_id IS NULL ORDER BY id');
+    const tokens = stmt.all();
+
+    if (index < 0 || index >= tokens.length) {
+      throw new Error('无效的账号索引');
+    }
+
+    const tokenId = tokens[index].id;
+    const deleteStmt = db.prepare('DELETE FROM google_tokens WHERE id = ?');
+    deleteStmt.run(tokenId);
+
+    tokenManager.forceReload(); // 强制刷新token管理器
+    logger.info(`账号 ${index} 已删除，token管理器已刷新`);
+    return true;
+  } catch (error) {
+    logger.error('删除账号失败:', error);
+    throw error;
   }
-  accounts.splice(index, 1);
-  await saveAccounts(accounts);
-  tokenManager.forceReload(); // 强制刷新token管理器
-  logger.info(`账号 ${index} 已删除，token管理器已刷新`);
-  return true;
 }
 
 // 启用/禁用账号
 export async function toggleAccount(index, enable) {
-  const accounts = await loadAccounts();
-  if (index < 0 || index >= accounts.length) {
-    throw new Error('无效的账号索引');
+  try {
+    // Get all admin tokens (user_id IS NULL) ordered by id
+    const stmt = db.prepare('SELECT id FROM google_tokens WHERE user_id IS NULL ORDER BY id');
+    const tokens = stmt.all();
+
+    if (index < 0 || index >= tokens.length) {
+      throw new Error('无效的账号索引');
+    }
+
+    const tokenId = tokens[index].id;
+    const updateStmt = db.prepare('UPDATE google_tokens SET enabled = ? WHERE id = ?');
+    updateStmt.run(enable ? 1 : 0, tokenId);
+
+    tokenManager.forceReload(); // 强制刷新token管理器
+    logger.info(`账号 ${index} 已${enable ? '启用' : '禁用'}，token管理器已刷新`);
+    return true;
+  } catch (error) {
+    logger.error('切换账号状态失败:', error);
+    throw error;
   }
-  accounts[index].enable = enable;
-  await saveAccounts(accounts);
-  tokenManager.forceReload(); // 强制刷新token管理器
-  logger.info(`账号 ${index} 已${enable ? '启用' : '禁用'}，token管理器已刷新`);
-  return true;
 }
 
 // 设置token的代理
 export async function setTokenProxy(index, proxyId) {
-  const accounts = await loadAccounts();
-  if (index < 0 || index >= accounts.length) {
-    throw new Error('无效的账号索引');
+  try {
+    // Get all admin tokens (user_id IS NULL) ordered by id
+    const stmt = db.prepare('SELECT id FROM google_tokens WHERE user_id IS NULL ORDER BY id');
+    const tokens = stmt.all();
+
+    if (index < 0 || index >= tokens.length) {
+      throw new Error('无效的账号索引');
+    }
+
+    const tokenId = tokens[index].id;
+    const updateStmt = db.prepare('UPDATE google_tokens SET proxy_id = ? WHERE id = ?');
+    updateStmt.run(proxyId || null, tokenId);
+
+    tokenManager.forceReload(); // 强制刷新token管理器
+    logger.info(`账号 ${index} 的代理已设置为: ${proxyId || '无'}`);
+    return true;
+  } catch (error) {
+    logger.error('设置代理失败:', error);
+    throw error;
   }
-  accounts[index].proxyId = proxyId || null;
-  await saveAccounts(accounts);
-  tokenManager.forceReload(); // 强制刷新token管理器
-  logger.info(`账号 ${index} 的代理已设置为: ${proxyId || '无'}`);
-  return true;
 }
 
 // 检查并清理 OAuth 端口
@@ -159,17 +197,23 @@ export async function triggerLogin() {
 
 // 获取账号统计信息
 export async function getAccountStats() {
-  const accounts = await loadAccounts();
-  return {
-    total: accounts.length,
-    enabled: accounts.filter(a => a.enable !== false).length,
-    disabled: accounts.filter(a => a.enable === false).length
-  };
+  try {
+    const totalStmt = db.prepare('SELECT COUNT(*) as count FROM google_tokens WHERE user_id IS NULL');
+    const enabledStmt = db.prepare('SELECT COUNT(*) as count FROM google_tokens WHERE user_id IS NULL AND enabled = 1');
+    const disabledStmt = db.prepare('SELECT COUNT(*) as count FROM google_tokens WHERE user_id IS NULL AND enabled = 0');
+
+    return {
+      total: totalStmt.get().count,
+      enabled: enabledStmt.get().count,
+      disabled: disabledStmt.get().count
+    };
+  } catch (error) {
+    logger.error('获取账号统计失败:', error);
+    return { total: 0, enabled: 0, disabled: 0 };
+  }
 }
 
 // 从回调链接手动添加 Token
-import https from 'https';
-
 const CLIENT_ID = '1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com';
 const CLIENT_SECRET = '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';
 
@@ -207,36 +251,42 @@ export async function getAccountName(accessToken) {
 }
 
 export async function addTokenFromCallback(callbackUrl) {
-  // 解析回调链接
-  const url = new URL(callbackUrl);
-  const code = url.searchParams.get('code');
-  const port = url.port || '80';
+  try {
+    // 解析回调链接
+    const url = new URL(callbackUrl);
+    const code = url.searchParams.get('code');
+    const port = url.port || '80';
 
-  if (!code) {
-    throw new Error('回调链接中没有找到授权码 (code)');
+    if (!code) {
+      throw new Error('回调链接中没有找到授权码 (code)');
+    }
+
+    logger.info(`正在使用授权码换取 Token...`);
+
+    // 使用授权码换取 Token
+    const tokenData = await exchangeCodeForToken(code, port, url.origin);
+
+    // 保存账号 (admin token with user_id = NULL)
+    const insertStmt = db.prepare(`
+      INSERT INTO google_tokens (
+        user_id, access_token, refresh_token, expires_in, timestamp, email, enabled
+      ) VALUES (NULL, ?, ?, ?, ?, NULL, 1)
+    `);
+    insertStmt.run(
+      tokenData.access_token,
+      tokenData.refresh_token,
+      tokenData.expires_in,
+      Date.now()
+    );
+
+    tokenManager.forceReload(); // 强制刷新token管理器
+
+    logger.info('Token 已成功保存，token管理器已刷新');
+    return { success: true, message: 'Token 已成功添加' };
+  } catch (error) {
+    logger.error('添加Token失败:', error);
+    throw error;
   }
-
-  logger.info(`正在使用授权码换取 Token...`);
-
-  // 使用授权码换取 Token
-  const tokenData = await exchangeCodeForToken(code, port, url.origin);
-
-  // 保存账号
-  const account = {
-    access_token: tokenData.access_token,
-    refresh_token: tokenData.refresh_token,
-    expires_in: tokenData.expires_in,
-    timestamp: Date.now(),
-    enable: true
-  };
-
-  const accounts = await loadAccounts();
-  accounts.push(account);
-  await saveAccounts(accounts);
-  tokenManager.forceReload(); // 强制刷新token管理器
-
-  logger.info('Token 已成功保存，token管理器已刷新');
-  return { success: true, message: 'Token 已成功添加' };
 }
 
 function exchangeCodeForToken(code, port, origin) {
@@ -292,11 +342,10 @@ export async function addDirectToken(tokenData) {
 
     logger.info('正在添加直接输入的 Token...');
 
-    // 加载现有账号
-    const accounts = await loadAccounts();
-
     // 检查是否已存在相同的 access_token
-    const exists = accounts.some(acc => acc.access_token === access_token);
+    const existsStmt = db.prepare('SELECT id FROM google_tokens WHERE user_id IS NULL AND access_token = ?');
+    const exists = existsStmt.get(access_token);
+
     if (exists) {
       logger.warn('Token 已存在，跳过添加');
       return {
@@ -305,26 +354,24 @@ export async function addDirectToken(tokenData) {
       };
     }
 
-    // 创建新账号
-    const newAccount = {
+    // 添加到数据库
+    const insertStmt = db.prepare(`
+      INSERT INTO google_tokens (
+        user_id, access_token, refresh_token, expires_in, timestamp, email, enabled
+      ) VALUES (NULL, ?, ?, ?, ?, NULL, 1)
+    `);
+    const result = insertStmt.run(
       access_token,
-      refresh_token: refresh_token || null,
-      expires_in: expires_in || 3600,
-      timestamp: Date.now(),
-      enable: true
-    };
-
-    // 添加到账号列表
-    accounts.push(newAccount);
-
-    // 保存账号
-    await saveAccounts(accounts);
+      refresh_token || null,
+      expires_in || 3600,
+      Date.now()
+    );
 
     logger.info('Token 添加成功');
     return {
       success: true,
       message: 'Token 添加成功',
-      index: accounts.length - 1
+      index: result.lastInsertRowid - 1
     };
   } catch (error) {
     logger.error('添加 Token 失败:', error);
@@ -338,68 +385,70 @@ export async function importTokens(filePath) {
     logger.info('开始导入 Token...');
 
     // 检查是否是 ZIP 文件
-    if (filePath.endsWith('.zip') || true) {
-      const zip = new AdmZip(filePath);
-      const zipEntries = zip.getEntries();
+    const zip = new AdmZip(filePath);
+    const zipEntries = zip.getEntries();
 
-      // 查找 tokens.json
-      const tokensEntry = zipEntries.find(entry => entry.entryName === 'tokens.json');
-      if (!tokensEntry) {
-        throw new Error('ZIP 文件中没有找到 tokens.json');
-      }
-
-      const tokensContent = tokensEntry.getData().toString('utf8');
-      const importedTokens = JSON.parse(tokensContent);
-
-      // 验证数据格式
-      if (!Array.isArray(importedTokens)) {
-        throw new Error('tokens.json 格式错误：应该是一个数组');
-      }
-
-      // 加载现有账号
-      const accounts = await loadAccounts();
-
-      // 添加新账号
-      let addedCount = 0;
-      for (const token of importedTokens) {
-        // 检查是否已存在
-        const exists = accounts.some(acc => acc.access_token === token.access_token);
-        if (!exists) {
-          accounts.push({
-            access_token: token.access_token,
-            refresh_token: token.refresh_token,
-            expires_in: token.expires_in,
-            timestamp: token.timestamp || Date.now(),
-            enable: token.enable !== false
-          });
-          addedCount++;
-        }
-      }
-
-      // 保存账号
-      await saveAccounts(accounts);
-      tokenManager.forceReload(); // 强制刷新token管理器
-
-      // 清理上传的文件
-      try {
-        await fs.unlink(filePath);
-      } catch (e) {
-        logger.warn('清理上传文件失败:', e);
-      }
-
-      logger.info(`成功导入 ${addedCount} 个 Token 账号，token管理器已刷新`);
-      return {
-        success: true,
-        count: addedCount,
-        total: importedTokens.length,
-        skipped: importedTokens.length - addedCount,
-        message: `成功导入 ${addedCount} 个 Token 账号${importedTokens.length - addedCount > 0 ? `，跳过 ${importedTokens.length - addedCount} 个重复账号` : ''}`
-      };
+    // 查找 tokens.json
+    const tokensEntry = zipEntries.find(entry => entry.entryName === 'tokens.json');
+    if (!tokensEntry) {
+      throw new Error('ZIP 文件中没有找到 tokens.json');
     }
+
+    const tokensContent = tokensEntry.getData().toString('utf8');
+    const importedTokens = JSON.parse(tokensContent);
+
+    // 验证数据格式
+    if (!Array.isArray(importedTokens)) {
+      throw new Error('tokens.json 格式错误：应该是一个数组');
+    }
+
+    // 添加新账号
+    let addedCount = 0;
+    for (const token of importedTokens) {
+      // 检查是否已存在
+      const existsStmt = db.prepare('SELECT id FROM google_tokens WHERE user_id IS NULL AND access_token = ?');
+      const exists = existsStmt.get(token.access_token);
+
+      if (!exists) {
+        const insertStmt = db.prepare(`
+          INSERT INTO google_tokens (
+            user_id, access_token, refresh_token, expires_in, timestamp, email, enabled
+          ) VALUES (NULL, ?, ?, ?, ?, NULL, ?)
+        `);
+        insertStmt.run(
+          token.access_token,
+          token.refresh_token,
+          token.expires_in,
+          token.timestamp || Date.now(),
+          token.enable !== false ? 1 : 0
+        );
+        addedCount++;
+      }
+    }
+
+    tokenManager.forceReload(); // 强制刷新token管理器
+
+    // 清理上传的文件
+    try {
+      const fs = await import('fs/promises');
+      await fs.unlink(filePath);
+    } catch (e) {
+      logger.warn('清理上传文件失败:', e);
+    }
+
+    logger.info(`成功导入 ${addedCount} 个 Token 账号，token管理器已刷新`);
+    return {
+      success: true,
+      count: addedCount,
+      total: importedTokens.length,
+      skipped: importedTokens.length - addedCount,
+      message: `成功导入 ${addedCount} 个 Token 账号${importedTokens.length - addedCount > 0 ? `，跳过 ${importedTokens.length - addedCount} 个重复账号` : ''}`
+    };
   } catch (error) {
     logger.error('导入 Token 失败:', error);
     // 清理上传的文件
     try {
+      const fs = await import('fs/promises');
       await fs.unlink(filePath);
     } catch (e) {}
     throw error;

@@ -1,22 +1,15 @@
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
 import { log } from '../utils/logger.js';
 import proxyManager from '../admin/proxy_manager.js';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+import db from '../database/db.js';
 
 const CLIENT_ID = '1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com';
 const CLIENT_SECRET = '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';
 
 class TokenManager {
-  constructor(filePath = path.join(__dirname,'..','..','data' ,'accounts.json')) {
-    this.filePath = filePath;
+  constructor() {
     this.tokens = [];
     this.lastLoadTime = 0;
     this.loadInterval = 60000; // 1分钟内不重复加载
-    this.cachedData = null; // 缓存文件数据，减少磁盘读取
 
     // 轮询机制
     this.currentTokenIndex = 0; // 轮询索引
@@ -38,12 +31,29 @@ class TokenManager {
       }
 
       log.info('正在加载token...');
-      const data = fs.readFileSync(this.filePath, 'utf8');
-      const tokenArray = JSON.parse(data);
-      this.cachedData = tokenArray; // 缓存原始数据
 
-      // 只加载已启用的token
-      this.tokens = tokenArray.filter(token => token.enable !== false);
+      // Query admin tokens from database (user_id IS NULL and enabled = 1)
+      const stmt = db.prepare('SELECT * FROM google_tokens WHERE user_id IS NULL AND enabled = 1');
+      const rows = stmt.all();
+
+      // Map database columns (snake_case) to object properties (camelCase)
+      this.tokens = rows.map(row => ({
+        access_token: row.access_token,
+        refresh_token: row.refresh_token,
+        expires_in: row.expires_in,
+        timestamp: row.timestamp,
+        email: row.email,
+        enable: row.enabled === 1,
+        proxyId: row.proxy_id,
+        disabledUntil: row.disabled_until,
+        quotaExhausted: row.quota_exhausted === 1,
+        totalCost: row.total_cost || 0,
+        dailyCost: row.daily_cost || 0,
+        lastResetTime: row.last_reset_time || 0,
+        totalRequests: row.total_requests || 0,
+        // Store database ID for updates
+        _dbId: row.id
+      }));
 
       this.lastLoadTime = Date.now();
       log.info(`成功加载 ${this.tokens.length} 个可用token`);
@@ -110,37 +120,58 @@ class TokenManager {
       token.access_token = data.access_token;
       token.expires_in = data.expires_in;
       token.timestamp = Date.now();
-      this.saveToFile();
+      this.saveToDatabase(token);
       return token;
     } else {
       throw { statusCode: response.status, message: await response.text() };
     }
   }
 
-  saveToFile() {
+  saveToDatabase(token) {
     try {
-      log.info(`[DEBUG] saveToFile 开始 - filePath: ${this.filePath}`);
-      // 使用缓存数据，减少磁盘读取
-      let allTokens = this.cachedData;
-      if (!allTokens) {
-        const data = fs.readFileSync(this.filePath, 'utf8');
-        allTokens = JSON.parse(data);
+      log.info(`[DEBUG] saveToDatabase 开始 - refresh_token: ${token?.refresh_token?.substring(0, 20)}...`);
+
+      if (!token._dbId) {
+        log.error('[DEBUG] saveToDatabase - token 缺少 _dbId');
+        return;
       }
 
-      this.tokens.forEach(memToken => {
-        const index = allTokens.findIndex(t => t.refresh_token === memToken.refresh_token);
-        if (index !== -1) {
-          log.info(`[DEBUG] saveToFile - 更新 token ${index}, dailyCost: ${memToken.dailyCost}, totalCost: ${memToken.totalCost}`);
-          allTokens[index] = memToken;
-        }
-      });
+      // Update token in database
+      const stmt = db.prepare(`
+        UPDATE google_tokens
+        SET access_token = ?,
+            expires_in = ?,
+            timestamp = ?,
+            proxy_id = ?,
+            disabled_until = ?,
+            quota_exhausted = ?,
+            total_cost = ?,
+            daily_cost = ?,
+            last_reset_time = ?,
+            total_requests = ?,
+            enabled = ?
+        WHERE id = ?
+      `);
 
-      fs.writeFileSync(this.filePath, JSON.stringify(allTokens, null, 2), 'utf8');
-      this.cachedData = allTokens; // 更新缓存
-      log.info(`[DEBUG] saveToFile 完成`);
+      stmt.run(
+        token.access_token,
+        token.expires_in,
+        token.timestamp,
+        token.proxyId || null,
+        token.disabledUntil || null,
+        token.quotaExhausted ? 1 : 0,
+        token.totalCost || 0,
+        token.dailyCost || 0,
+        token.lastResetTime || 0,
+        token.totalRequests || 0,
+        token.enable !== false ? 1 : 0,
+        token._dbId
+      );
+
+      log.info(`[DEBUG] saveToDatabase 完成 - dailyCost: ${token.dailyCost}, totalCost: ${token.totalCost}`);
     } catch (error) {
-      log.error('保存文件失败:', error.message);
-      log.error('[DEBUG] saveToFile 错误堆栈:', error.stack);
+      log.error('保存数据库失败:', error.message);
+      log.error('[DEBUG] saveToDatabase 错误堆栈:', error.stack);
     }
   }
 
@@ -161,7 +192,7 @@ class TokenManager {
   disableTokenUntil(token, resetTime) {
     token.disabledUntil = resetTime;
     token.quotaExhausted = true; // 标记为配额耗尽
-    this.saveToFile();
+    this.saveToDatabase(token);
 
     const resetDate = new Date(resetTime);
     log.warn(`⏸️  Token 因配额耗尽被禁用，将在 ${resetDate.toLocaleString()} 自动恢复`);
@@ -175,7 +206,7 @@ class TokenManager {
     token.enable = false;
     delete token.disabledUntil;
     delete token.quotaExhausted;
-    this.saveToFile();
+    this.saveToDatabase(token);
     this.loadTokens(true); // 强制刷新
   }
 
@@ -185,23 +216,27 @@ class TokenManager {
   startQuotaResetCheck() {
     setInterval(() => {
       const now = Date.now();
-      let restoredCount = 0;
 
-      // 需要更新缓存数据中的 token
-      if (this.cachedData) {
-        this.cachedData.forEach(token => {
-          if (token.disabledUntil && now >= token.disabledUntil) {
-            delete token.disabledUntil;
-            delete token.quotaExhausted;
-            restoredCount++;
-          }
-        });
+      try {
+        // Update tokens where disabled_until has passed
+        const stmt = db.prepare(`
+          UPDATE google_tokens
+          SET disabled_until = NULL,
+              quota_exhausted = 0
+          WHERE user_id IS NULL
+            AND disabled_until IS NOT NULL
+            AND disabled_until <= ?
+        `);
+
+        const result = stmt.run(now);
+        const restoredCount = result.changes;
 
         if (restoredCount > 0) {
-          this.saveToFile();
           this.loadTokens(true);
           log.info(`✅ 恢复了 ${restoredCount} 个配额已重置的 token`);
         }
+      } catch (error) {
+        log.error('配额重置检查失败:', error.message);
       }
     }, 60000); // 每分钟检查一次
   }
@@ -289,8 +324,8 @@ class TokenManager {
 
       log.info(`[DEBUG] addUsage - 更新后 dailyCost: ${found.dailyCost}, totalCost: ${found.totalCost}`);
 
-      this.saveToFile();
-      log.info(`[DEBUG] addUsage - saveToFile 已调用`);
+      this.saveToDatabase(found);
+      log.info(`[DEBUG] addUsage - saveToDatabase 已调用`);
     } catch (error) {
       log.error('记录token费用失败:', error.message);
       log.error('[DEBUG] addUsage 错误堆栈:', error.stack);
@@ -337,7 +372,7 @@ class TokenManager {
     });
     return {
       totalTokens: this.tokens.length,
-      availableTokens: this.tokens.filter(t => token.enable !== false && !this.isTokenDisabledByQuota(t)).length,
+      availableTokens: this.tokens.filter(t => t.enable !== false && !this.isTokenDisabledByQuota(t)).length,
       totalRequests: Array.from(this.usageStats.values()).reduce((sum, s) => sum + s.requests, 0),
       tokens: stats
     };

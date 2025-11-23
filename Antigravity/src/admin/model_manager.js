@@ -1,10 +1,8 @@
+import logger from '../utils/logger.js';
+import db from '../database/db.js';
+import { getAvailableModels } from '../api/client.js';
 import fs from 'fs/promises';
 import path from 'path';
-import logger from '../utils/logger.js';
-import { getAvailableModels } from '../api/client.js';
-
-const MODELS_FILE = path.join(process.cwd(), 'data', 'models.json');
-const MODEL_USAGE_FILE = path.join(process.cwd(), 'data', 'model_usage.json');
 
 // 默认模型配置（每日额度）
 const DEFAULT_MODEL_QUOTAS = {
@@ -19,49 +17,12 @@ const DEFAULT_MODEL_QUOTAS = {
 // 读取模型列表
 export async function loadModels() {
   try {
-    const data = await fs.readFile(MODELS_FILE, 'utf-8');
-    return JSON.parse(data);
+    const models = db.prepare('SELECT * FROM models ORDER BY id').all();
+    return models;
   } catch (error) {
-    if (error.code === 'ENOENT') {
-      return [];
-    }
-    throw error;
+    logger.error(`加载模型列表失败: ${error.message}`);
+    return [];
   }
-}
-
-// 保存模型列表
-async function saveModels(models) {
-  const dir = path.dirname(MODELS_FILE);
-  try {
-    await fs.access(dir);
-  } catch {
-    await fs.mkdir(dir, { recursive: true });
-  }
-  await fs.writeFile(MODELS_FILE, JSON.stringify(models, null, 2), 'utf-8');
-}
-
-// 读取模型使用记录
-async function loadModelUsage() {
-  try {
-    const data = await fs.readFile(MODEL_USAGE_FILE, 'utf-8');
-    return JSON.parse(data);
-  } catch (error) {
-    if (error.code === 'ENOENT') {
-      return {};
-    }
-    throw error;
-  }
-}
-
-// 保存模型使用记录
-async function saveModelUsage(usage) {
-  const dir = path.dirname(MODEL_USAGE_FILE);
-  try {
-    await fs.access(dir);
-  } catch {
-    await fs.mkdir(dir, { recursive: true });
-  }
-  await fs.writeFile(MODEL_USAGE_FILE, JSON.stringify(usage, null, 2), 'utf-8');
 }
 
 // 自动获取并保存模型
@@ -74,19 +35,29 @@ export async function fetchAndSaveModels() {
       throw new Error('获取模型列表失败');
     }
 
-    const models = modelsData.data.map(model => ({
-      id: model.id,
-      name: model.id,
-      quota: DEFAULT_MODEL_QUOTAS[model.id] || DEFAULT_MODEL_QUOTAS.default,
-      enabled: true,
-      created: Date.now(),
-      updated: Date.now()
-    }));
+    const stmt = db.prepare(`
+      INSERT INTO models (id, name, quota, enabled)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        name = excluded.name,
+        quota = COALESCE((SELECT quota FROM models WHERE id = excluded.id), excluded.quota)
+    `);
 
-    await saveModels(models);
-    logger.info(`成功获取并保存了 ${models.length} 个模型`);
+    const insert = db.transaction((modelsData) => {
+      for (const model of modelsData) {
+        stmt.run(
+          model.id,
+          model.id,
+          DEFAULT_MODEL_QUOTAS[model.id] || DEFAULT_MODEL_QUOTAS.default,
+          1
+        );
+      }
+    });
 
-    return models;
+    insert(modelsData.data);
+    logger.info(`成功获取并保存了 ${modelsData.data.length} 个模型`);
+
+    return await loadModels();
   } catch (error) {
     logger.error(`获取模型失败: ${error.message}`);
     throw error;
@@ -95,186 +66,206 @@ export async function fetchAndSaveModels() {
 
 // 更新模型配额
 export async function updateModelQuota(modelId, quota) {
-  const models = await loadModels();
-  const model = models.find(m => m.id === modelId);
+  try {
+    const checkStmt = db.prepare('SELECT * FROM models WHERE id = ?');
+    const model = checkStmt.get(modelId);
 
-  if (!model) {
-    throw new Error('模型不存在');
+    if (!model) {
+      throw new Error('模型不存在');
+    }
+
+    const updateStmt = db.prepare('UPDATE models SET quota = ? WHERE id = ?');
+    updateStmt.run(quota, modelId);
+
+    logger.info(`更新模型 ${modelId} 配额为 ${quota}`);
+
+    return { ...model, quota };
+  } catch (error) {
+    logger.error(`更新模型配额失败: ${error.message}`);
+    throw error;
   }
-
-  model.quota = quota;
-  model.updated = Date.now();
-
-  await saveModels(models);
-  logger.info(`更新模型 ${modelId} 配额为 ${quota}`);
-
-  return model;
 }
 
 // 启用/禁用模型
 export async function toggleModel(modelId, enabled) {
-  const models = await loadModels();
-  const model = models.find(m => m.id === modelId);
+  try {
+    const checkStmt = db.prepare('SELECT * FROM models WHERE id = ?');
+    const model = checkStmt.get(modelId);
 
-  if (!model) {
-    throw new Error('模型不存在');
+    if (!model) {
+      throw new Error('模型不存在');
+    }
+
+    const updateStmt = db.prepare('UPDATE models SET enabled = ? WHERE id = ?');
+    updateStmt.run(enabled ? 1 : 0, modelId);
+
+    logger.info(`模型 ${modelId} 已${enabled ? '启用' : '禁用'}`);
+
+    return { ...model, enabled: enabled ? 1 : 0 };
+  } catch (error) {
+    logger.error(`切换模型状态失败: ${error.message}`);
+    throw error;
   }
-
-  model.enabled = enabled;
-  model.updated = Date.now();
-
-  await saveModels(models);
-  logger.info(`模型 ${modelId} 已${enabled ? '启用' : '禁用'}`);
-
-  return model;
 }
 
 // 记录模型使用
 export async function recordModelUsage(userId, modelId) {
-  const usage = await loadModelUsage();
-  const today = new Date().toISOString().split('T')[0];
+  try {
+    const today = new Date().toISOString().split('T')[0];
 
-  // 初始化用户记录
-  if (!usage[userId]) {
-    usage[userId] = {};
+    const stmt = db.prepare(`
+      INSERT INTO model_usage (model_id, date, usage)
+      VALUES (?, ?, 1)
+      ON CONFLICT(model_id, date) DO UPDATE SET
+        usage = usage + 1
+    `);
+
+    stmt.run(modelId, today);
+
+    const getStmt = db.prepare('SELECT usage FROM model_usage WHERE model_id = ? AND date = ?');
+    const result = getStmt.get(modelId, today);
+
+    return result ? result.usage : 1;
+  } catch (error) {
+    logger.error(`记录模型使用失败: ${error.message}`);
+    return 0;
   }
-
-  // 初始化日期记录
-  if (!usage[userId][today]) {
-    usage[userId][today] = {};
-  }
-
-  // 初始化模型记录
-  if (!usage[userId][today][modelId]) {
-    usage[userId][today][modelId] = 0;
-  }
-
-  // 增加使用次数
-  usage[userId][today][modelId]++;
-
-  await saveModelUsage(usage);
-  return usage[userId][today][modelId];
 }
 
 // 获取用户今日模型使用情况
 export async function getUserModelUsage(userId) {
-  const usage = await loadModelUsage();
-  const today = new Date().toISOString().split('T')[0];
+  try {
+    const today = new Date().toISOString().split('T')[0];
 
-  if (!usage[userId] || !usage[userId][today]) {
+    const stmt = db.prepare(`
+      SELECT model_id, usage FROM model_usage
+      WHERE date = ?
+    `);
+
+    const rows = stmt.all(today);
+    const usage = {};
+
+    rows.forEach(row => {
+      usage[row.model_id] = row.usage;
+    });
+
+    return usage;
+  } catch (error) {
+    logger.error(`获取用户模型使用情况失败: ${error.message}`);
     return {};
   }
-
-  return usage[userId][today];
 }
 
 // 检查用户模型配额
 export async function checkModelQuota(userId, modelId) {
-  const models = await loadModels();
-  const model = models.find(m => m.id === modelId);
+  try {
+    const modelStmt = db.prepare('SELECT * FROM models WHERE id = ?');
+    const model = modelStmt.get(modelId);
 
-  if (!model) {
-    // 模型不存在，使用默认配额
-    const defaultQuota = DEFAULT_MODEL_QUOTAS.default;
-    const usage = await getUserModelUsage(userId);
-    const used = usage[modelId] || 0;
+    const today = new Date().toISOString().split('T')[0];
+    const usageStmt = db.prepare('SELECT usage FROM model_usage WHERE model_id = ? AND date = ?');
+    const usageRow = usageStmt.get(modelId, today);
+    const used = usageRow ? usageRow.usage : 0;
+
+    if (!model) {
+      // 模型不存在，使用默认配额
+      const defaultQuota = DEFAULT_MODEL_QUOTAS.default;
+
+      return {
+        allowed: used < defaultQuota,
+        quota: defaultQuota,
+        used,
+        remaining: Math.max(0, defaultQuota - used)
+      };
+    }
+
+    if (!model.enabled) {
+      return {
+        allowed: false,
+        quota: model.quota,
+        used,
+        remaining: 0,
+        error: '该模型已被禁用'
+      };
+    }
 
     return {
-      allowed: used < defaultQuota,
-      quota: defaultQuota,
+      allowed: used < model.quota,
+      quota: model.quota,
       used,
-      remaining: Math.max(0, defaultQuota - used)
+      remaining: Math.max(0, model.quota - used)
     };
-  }
-
-  if (!model.enabled) {
+  } catch (error) {
+    logger.error(`检查模型配额失败: ${error.message}`);
     return {
       allowed: false,
-      quota: model.quota,
+      quota: 0,
       used: 0,
       remaining: 0,
-      error: '该模型已被禁用'
+      error: '检查配额失败'
     };
   }
-
-  const usage = await getUserModelUsage(userId);
-  const used = usage[modelId] || 0;
-
-  return {
-    allowed: used < model.quota,
-    quota: model.quota,
-    used,
-    remaining: Math.max(0, model.quota - used)
-  };
 }
 
 // 获取模型统计信息
 export async function getModelStats() {
-  const models = await loadModels();
-  const usage = await loadModelUsage();
-  const today = new Date().toISOString().split('T')[0];
+  try {
+    const models = await loadModels();
+    const today = new Date().toISOString().split('T')[0];
 
-  const stats = models.map(model => {
-    let totalUsageToday = 0;
-    let userCount = 0;
+    const stats = models.map(model => {
+      const usageStmt = db.prepare('SELECT COALESCE(usage, 0) as usage FROM model_usage WHERE model_id = ? AND date = ?');
+      const usageRow = usageStmt.get(model.id, today);
+      const totalUsageToday = usageRow ? usageRow.usage : 0;
 
-    // 统计今日所有用户对该模型的使用
-    Object.keys(usage).forEach(userId => {
-      if (usage[userId][today] && usage[userId][today][model.id]) {
-        totalUsageToday += usage[userId][today][model.id];
-        userCount++;
-      }
+      return {
+        id: model.id,
+        name: model.name,
+        quota: model.quota,
+        enabled: model.enabled,
+        usageToday: totalUsageToday,
+        userCount: totalUsageToday > 0 ? 1 : 0  // Simplified - actual user count would require user tracking
+      };
     });
 
     return {
-      id: model.id,
-      name: model.name,
-      quota: model.quota,
-      enabled: model.enabled,
-      usageToday: totalUsageToday,
-      userCount,
-      created: model.created
+      models: stats,
+      totalModels: models.length,
+      enabledModels: models.filter(m => m.enabled).length,
+      totalUsageToday: stats.reduce((sum, m) => sum + m.usageToday, 0)
     };
-  });
-
-  return {
-    models: stats,
-    totalModels: models.length,
-    enabledModels: models.filter(m => m.enabled).length,
-    totalUsageToday: stats.reduce((sum, m) => sum + m.usageToday, 0)
-  };
+  } catch (error) {
+    logger.error(`获取模型统计信息失败: ${error.message}`);
+    return {
+      models: [],
+      totalModels: 0,
+      enabledModels: 0,
+      totalUsageToday: 0
+    };
+  }
 }
 
 // 清理过期使用记录（保留最近30天）
 export async function cleanupOldUsage() {
-  const usage = await loadModelUsage();
-  const cutoffDate = new Date();
-  cutoffDate.setDate(cutoffDate.getDate() - 30);
-  const cutoffDateStr = cutoffDate.toISOString().split('T')[0];
+  try {
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - 30);
+    const cutoffDateStr = cutoffDate.toISOString().split('T')[0];
 
-  let cleaned = 0;
+    const countStmt = db.prepare('SELECT COUNT(*) as count FROM model_usage WHERE date < ?');
+    const { count: cleaned } = countStmt.get(cutoffDateStr);
 
-  Object.keys(usage).forEach(userId => {
-    const userDates = Object.keys(usage[userId]);
-    userDates.forEach(date => {
-      if (date < cutoffDateStr) {
-        delete usage[userId][date];
-        cleaned++;
-      }
-    });
-
-    // 如果用户没有任何记录，删除用户
-    if (Object.keys(usage[userId]).length === 0) {
-      delete usage[userId];
+    if (cleaned > 0) {
+      const deleteStmt = db.prepare('DELETE FROM model_usage WHERE date < ?');
+      deleteStmt.run(cutoffDateStr);
+      logger.info(`清理了 ${cleaned} 条过期的模型使用记录`);
     }
-  });
 
-  if (cleaned > 0) {
-    await saveModelUsage(usage);
-    logger.info(`清理了 ${cleaned} 条过期的模型使用记录`);
+    return cleaned;
+  } catch (error) {
+    logger.error(`清理过期使用记录失败: ${error.message}`);
+    return 0;
   }
-
-  return cleaned;
 }
 
 // 设置用户特定模型配额（可选功能，覆盖默认配额）

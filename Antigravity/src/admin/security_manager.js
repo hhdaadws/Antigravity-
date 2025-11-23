@@ -1,39 +1,13 @@
-import fs from 'fs/promises';
-import path from 'path';
 import crypto from 'crypto';
 import logger from '../utils/logger.js';
+import db from '../database/db.js';
 
-const SECURITY_FILE = path.join(process.cwd(), 'data', 'security.json');
-
-// 加载安全数据
-async function loadSecurityData() {
-  try {
-    const data = await fs.readFile(SECURITY_FILE, 'utf-8');
-    return JSON.parse(data);
-  } catch (error) {
-    if (error.code === 'ENOENT') {
-      return {
-        ipRegistrations: {},  // IP -> [{timestamp, userId}]
-        deviceRegistrations: {}, // deviceId -> [{timestamp, userId}]
-        bannedIPs: {}, // IP -> {reason, bannedAt}
-        bannedDevices: {}, // deviceId -> {reason, bannedAt}
-        suspiciousAttempts: {} // IP -> count
-      };
-    }
-    throw error;
-  }
-}
-
-// 保存安全数据
-async function saveSecurityData(data) {
-  const dir = path.dirname(SECURITY_FILE);
-  try {
-    await fs.access(dir);
-  } catch {
-    await fs.mkdir(dir, { recursive: true });
-  }
-  await fs.writeFile(SECURITY_FILE, JSON.stringify(data, null, 2), 'utf-8');
-}
+// Security events are stored in security_events table with:
+// - event_type: 'ip_registration', 'device_registration', 'ip_ban', 'device_ban', 'suspicious_attempt'
+// - identifier: IP address or device ID
+// - timestamp: Event timestamp
+// - data: JSON data for the event
+// - expires_at: When the event expires (for cleanup)
 
 // 生成设备指纹
 export function generateDeviceFingerprint(userAgent, acceptLanguage, screenResolution, timezone, platform) {
@@ -43,122 +17,186 @@ export function generateDeviceFingerprint(userAgent, acceptLanguage, screenResol
 
 // 检查IP是否被封禁
 export async function isIPBanned(ip) {
-  const security = await loadSecurityData();
-  return !!security.bannedIPs[ip];
+  try {
+    const stmt = db.prepare(`
+      SELECT * FROM security_events
+      WHERE event_type = 'ip_ban' AND identifier = ? AND (expires_at IS NULL OR expires_at > ?)
+    `);
+    const ban = stmt.get(ip, Date.now());
+    return !!ban;
+  } catch (error) {
+    logger.error('检查IP封禁失败:', error);
+    return false;
+  }
 }
 
 // 检查设备是否被封禁
 export async function isDeviceBanned(deviceId) {
-  const security = await loadSecurityData();
-  return !!security.bannedDevices[deviceId];
+  try {
+    const stmt = db.prepare(`
+      SELECT * FROM security_events
+      WHERE event_type = 'device_ban' AND identifier = ? AND (expires_at IS NULL OR expires_at > ?)
+    `);
+    const ban = stmt.get(deviceId, Date.now());
+    return !!ban;
+  } catch (error) {
+    logger.error('检查设备封禁失败:', error);
+    return false;
+  }
 }
 
 // 检查IP注册限制
 export async function checkIPRegistrationLimit(ip) {
-  const security = await loadSecurityData();
+  try {
+    // 检查是否被封禁
+    const banStmt = db.prepare(`
+      SELECT data FROM security_events
+      WHERE event_type = 'ip_ban' AND identifier = ? AND (expires_at IS NULL OR expires_at > ?)
+    `);
+    const ban = banStmt.get(ip, Date.now());
 
-  // 检查是否被封禁
-  if (security.bannedIPs[ip]) {
-    throw new Error(`该 IP 已被封禁：${security.bannedIPs[ip].reason}`);
-  }
-
-  const now = Date.now();
-  const dayAgo = now - 24 * 60 * 60 * 1000;
-
-  // 获取24小时内的注册记录
-  if (!security.ipRegistrations[ip]) {
-    security.ipRegistrations[ip] = [];
-  }
-
-  // 清理过期记录
-  security.ipRegistrations[ip] = security.ipRegistrations[ip].filter(
-    record => record.timestamp > dayAgo
-  );
-
-  // 检查注册数量
-  if (security.ipRegistrations[ip].length >= 5) {
-    // 记录可疑尝试
-    if (!security.suspiciousAttempts[ip]) {
-      security.suspiciousAttempts[ip] = 0;
-    }
-    security.suspiciousAttempts[ip]++;
-
-    // 如果尝试次数超过3次，封禁IP
-    if (security.suspiciousAttempts[ip] >= 3) {
-      security.bannedIPs[ip] = {
-        reason: '短时间内注册次数过多（超过限制3次以上）',
-        bannedAt: now
-      };
-      await saveSecurityData(security);
-      logger.warn(`IP ${ip} 已被封禁：注册尝试次数过多`);
-      throw new Error('该 IP 已被封禁：注册次数过多');
+    if (ban) {
+      const banData = JSON.parse(ban.data || '{}');
+      throw new Error(`该 IP 已被封禁：${banData.reason || '注册次数过多'}`);
     }
 
-    await saveSecurityData(security);
-    throw new Error('24小时内该 IP 已注册5个账号，请稍后再试');
-  }
+    const now = Date.now();
+    const dayAgo = now - 24 * 60 * 60 * 1000;
 
-  return true;
+    // 获取24小时内的注册记录
+    const registrationStmt = db.prepare(`
+      SELECT COUNT(*) as count FROM security_events
+      WHERE event_type = 'ip_registration' AND identifier = ? AND timestamp > ?
+    `);
+    const { count } = registrationStmt.get(ip, dayAgo);
+
+    // 清理过期记录
+    const cleanupStmt = db.prepare(`
+      DELETE FROM security_events
+      WHERE event_type = 'ip_registration' AND identifier = ? AND timestamp <= ?
+    `);
+    cleanupStmt.run(ip, dayAgo);
+
+    // 检查注册数量
+    if (count >= 5) {
+      // 记录可疑尝试
+      const suspiciousStmt = db.prepare(`
+        SELECT COUNT(*) as count FROM security_events
+        WHERE event_type = 'suspicious_attempt' AND identifier = ? AND timestamp > ?
+      `);
+      const { count: suspiciousCount } = suspiciousStmt.get(ip, dayAgo);
+
+      const insertSuspiciousStmt = db.prepare(`
+        INSERT INTO security_events (event_type, identifier, timestamp, data, expires_at)
+        VALUES ('suspicious_attempt', ?, ?, NULL, ?)
+      `);
+      insertSuspiciousStmt.run(ip, now, now + 24 * 60 * 60 * 1000);
+
+      // 如果尝试次数超过3次，封禁IP
+      if (suspiciousCount >= 2) { // >=2 because we just added one
+        const banData = JSON.stringify({ reason: '短时间内注册次数过多（超过限制3次以上）', bannedAt: now });
+        const banStmt = db.prepare(`
+          INSERT INTO security_events (event_type, identifier, timestamp, data, expires_at)
+          VALUES ('ip_ban', ?, ?, ?, NULL)
+        `);
+        banStmt.run(ip, now, banData);
+
+        logger.warn(`IP ${ip} 已被封禁：注册尝试次数过多`);
+        throw new Error('该 IP 已被封禁：注册次数过多');
+      }
+
+      throw new Error('24小时内该 IP 已注册5个账号，请稍后再试');
+    }
+
+    return true;
+  } catch (error) {
+    logger.error('检查IP注册限制失败:', error);
+    throw error;
+  }
 }
 
 // 检查设备注册限制
 export async function checkDeviceRegistrationLimit(deviceId) {
-  const security = await loadSecurityData();
+  try {
+    // 检查是否被封禁
+    const banStmt = db.prepare(`
+      SELECT data FROM security_events
+      WHERE event_type = 'device_ban' AND identifier = ? AND (expires_at IS NULL OR expires_at > ?)
+    `);
+    const ban = banStmt.get(deviceId, Date.now());
 
-  // 检查是否被封禁
-  if (security.bannedDevices[deviceId]) {
-    throw new Error(`该设备已被封禁：${security.bannedDevices[deviceId].reason}`);
+    if (ban) {
+      const banData = JSON.parse(ban.data || '{}');
+      throw new Error(`该设备已被封禁：${banData.reason || '注册次数过多'}`);
+    }
+
+    const now = Date.now();
+    const dayAgo = now - 24 * 60 * 60 * 1000;
+
+    // 获取24小时内的注册记录
+    const registrationStmt = db.prepare(`
+      SELECT COUNT(*) as count FROM security_events
+      WHERE event_type = 'device_registration' AND identifier = ? AND timestamp > ?
+    `);
+    const { count } = registrationStmt.get(deviceId, dayAgo);
+
+    // 清理过期记录
+    const cleanupStmt = db.prepare(`
+      DELETE FROM security_events
+      WHERE event_type = 'device_registration' AND identifier = ? AND timestamp <= ?
+    `);
+    cleanupStmt.run(deviceId, dayAgo);
+
+    // 检查注册数量
+    if (count >= 5) {
+      // 封禁设备
+      const banData = JSON.stringify({ reason: '短时间内同一设备注册次数过多', bannedAt: now });
+      const banDeviceStmt = db.prepare(`
+        INSERT INTO security_events (event_type, identifier, timestamp, data, expires_at)
+        VALUES ('device_ban', ?, ?, ?, NULL)
+      `);
+      banDeviceStmt.run(deviceId, now, banData);
+
+      logger.warn(`设备 ${deviceId} 已被封禁：注册尝试次数过多`);
+      throw new Error('该设备已被封禁：注册次数过多');
+    }
+
+    return true;
+  } catch (error) {
+    logger.error('检查设备注册限制失败:', error);
+    throw error;
   }
-
-  const now = Date.now();
-  const dayAgo = now - 24 * 60 * 60 * 1000;
-
-  // 获取24小时内的注册记录
-  if (!security.deviceRegistrations[deviceId]) {
-    security.deviceRegistrations[deviceId] = [];
-  }
-
-  // 清理过期记录
-  security.deviceRegistrations[deviceId] = security.deviceRegistrations[deviceId].filter(
-    record => record.timestamp > dayAgo
-  );
-
-  // 检查注册数量
-  if (security.deviceRegistrations[deviceId].length >= 5) {
-    // 封禁设备
-    security.bannedDevices[deviceId] = {
-      reason: '短时间内同一设备注册次数过多',
-      bannedAt: now
-    };
-    await saveSecurityData(security);
-    logger.warn(`设备 ${deviceId} 已被封禁：注册尝试次数过多`);
-    throw new Error('该设备已被封禁：注册次数过多');
-  }
-
-  return true;
 }
 
 // 记录注册
 export async function recordRegistration(ip, deviceId, userId) {
-  const security = await loadSecurityData();
-  const now = Date.now();
+  try {
+    const now = Date.now();
+    const expiresAt = now + 24 * 60 * 60 * 1000; // 24小时后过期
 
-  // 记录IP注册
-  if (!security.ipRegistrations[ip]) {
-    security.ipRegistrations[ip] = [];
-  }
-  security.ipRegistrations[ip].push({ timestamp: now, userId });
+    // 记录IP注册
+    const ipData = JSON.stringify({ userId, timestamp: now });
+    const ipStmt = db.prepare(`
+      INSERT INTO security_events (event_type, identifier, timestamp, data, expires_at)
+      VALUES ('ip_registration', ?, ?, ?, ?)
+    `);
+    ipStmt.run(ip, now, ipData, expiresAt);
 
-  // 记录设备注册
-  if (deviceId) {
-    if (!security.deviceRegistrations[deviceId]) {
-      security.deviceRegistrations[deviceId] = [];
+    // 记录设备注册
+    if (deviceId) {
+      const deviceData = JSON.stringify({ userId, timestamp: now });
+      const deviceStmt = db.prepare(`
+        INSERT INTO security_events (event_type, identifier, timestamp, data, expires_at)
+        VALUES ('device_registration', ?, ?, ?, ?)
+      `);
+      deviceStmt.run(deviceId, now, deviceData, expiresAt);
     }
-    security.deviceRegistrations[deviceId].push({ timestamp: now, userId });
-  }
 
-  await saveSecurityData(security);
-  logger.info(`记录注册：IP=${ip}, 设备=${deviceId}, 用户=${userId}`);
+    logger.info(`记录注册：IP=${ip}, 设备=${deviceId}, 用户=${userId}`);
+  } catch (error) {
+    logger.error('记录注册失败:', error);
+    throw error;
+  }
 }
 
 // 清理长时间未登录的账号（超过15天）
@@ -190,41 +228,95 @@ export async function cleanupInactiveUsers(users) {
 
 // 获取安全统计
 export async function getSecurityStats() {
-  const security = await loadSecurityData();
+  try {
+    const now = Date.now();
 
-  return {
-    bannedIPsCount: Object.keys(security.bannedIPs).length,
-    bannedDevicesCount: Object.keys(security.bannedDevices).length,
-    bannedIPs: security.bannedIPs,
-    bannedDevices: security.bannedDevices
-  };
+    const ipBanStmt = db.prepare(`
+      SELECT COUNT(*) as count FROM security_events
+      WHERE event_type = 'ip_ban' AND (expires_at IS NULL OR expires_at > ?)
+    `);
+    const deviceBanStmt = db.prepare(`
+      SELECT COUNT(*) as count FROM security_events
+      WHERE event_type = 'device_ban' AND (expires_at IS NULL OR expires_at > ?)
+    `);
+
+    const ipBansStmt = db.prepare(`
+      SELECT identifier, data FROM security_events
+      WHERE event_type = 'ip_ban' AND (expires_at IS NULL OR expires_at > ?)
+    `);
+    const deviceBansStmt = db.prepare(`
+      SELECT identifier, data FROM security_events
+      WHERE event_type = 'device_ban' AND (expires_at IS NULL OR expires_at > ?)
+    `);
+
+    const bannedIPs = {};
+    const bannedDevices = {};
+
+    for (const row of ipBansStmt.all(now)) {
+      const data = JSON.parse(row.data || '{}');
+      bannedIPs[row.identifier] = data;
+    }
+
+    for (const row of deviceBansStmt.all(now)) {
+      const data = JSON.parse(row.data || '{}');
+      bannedDevices[row.identifier] = data;
+    }
+
+    return {
+      bannedIPsCount: ipBanStmt.get(now).count,
+      bannedDevicesCount: deviceBanStmt.get(now).count,
+      bannedIPs,
+      bannedDevices
+    };
+  } catch (error) {
+    logger.error('获取安全统计失败:', error);
+    return {
+      bannedIPsCount: 0,
+      bannedDevicesCount: 0,
+      bannedIPs: {},
+      bannedDevices: {}
+    };
+  }
 }
 
 // 解封IP
 export async function unbanIP(ip) {
-  const security = await loadSecurityData();
+  try {
+    const deleteStmt = db.prepare(`
+      DELETE FROM security_events
+      WHERE event_type IN ('ip_ban', 'suspicious_attempt') AND identifier = ?
+    `);
+    const result = deleteStmt.run(ip);
 
-  if (security.bannedIPs[ip]) {
-    delete security.bannedIPs[ip];
-    delete security.suspiciousAttempts[ip];
-    await saveSecurityData(security);
-    logger.info(`IP ${ip} 已解封`);
-    return true;
+    if (result.changes > 0) {
+      logger.info(`IP ${ip} 已解封`);
+      return true;
+    }
+
+    return false;
+  } catch (error) {
+    logger.error('解封IP失败:', error);
+    return false;
   }
-
-  return false;
 }
 
 // 解封设备
 export async function unbanDevice(deviceId) {
-  const security = await loadSecurityData();
+  try {
+    const deleteStmt = db.prepare(`
+      DELETE FROM security_events
+      WHERE event_type = 'device_ban' AND identifier = ?
+    `);
+    const result = deleteStmt.run(deviceId);
 
-  if (security.bannedDevices[deviceId]) {
-    delete security.bannedDevices[deviceId];
-    await saveSecurityData(security);
-    logger.info(`设备 ${deviceId} 已解封`);
-    return true;
+    if (result.changes > 0) {
+      logger.info(`设备 ${deviceId} 已解封`);
+      return true;
+    }
+
+    return false;
+  } catch (error) {
+    logger.error('解封设备失败:', error);
+    return false;
   }
-
-  return false;
 }

@@ -1,80 +1,74 @@
-import fs from 'fs/promises';
-import path from 'path';
+import db from '../database/db.js';
 
-const LOGS_FILE = path.join(process.cwd(), 'data', 'app_logs.json');
 const MAX_LOGS = 200; // 最多保存 200 条日志（降低内存使用）
 
-// 内存缓存，避免频繁读取文件
-let logsCache = null;
-let lastCacheTime = 0;
-const CACHE_DURATION = 30000; // 缓存30秒
-
-// 确保数据目录存在
-async function ensureDataDir() {
-  const dataDir = path.dirname(LOGS_FILE);
-  try {
-    await fs.access(dataDir);
-  } catch {
-    await fs.mkdir(dataDir, { recursive: true });
-  }
-}
-
-// 加载日志（带缓存）
+// 加载日志
 export async function loadLogs() {
-  const now = Date.now();
-
-  // 如果缓存有效，直接返回缓存
-  if (logsCache && (now - lastCacheTime) < CACHE_DURATION) {
-    return logsCache;
-  }
-
-  await ensureDataDir();
   try {
-    const data = await fs.readFile(LOGS_FILE, 'utf-8');
-    logsCache = JSON.parse(data);
-    lastCacheTime = now;
-    return logsCache;
+    const logs = db.prepare('SELECT * FROM app_logs ORDER BY timestamp DESC').all();
+    return logs;
   } catch (error) {
-    if (error.code === 'ENOENT' || error instanceof SyntaxError) {
-      // 文件不存在或 JSON 格式错误，返回空数组
-      logsCache = [];
-      lastCacheTime = now;
-      return [];
-    }
-    throw error;
+    console.error('加载日志失败:', error);
+    return [];
   }
-}
-
-// 保存日志
-async function saveLogs(logs) {
-  await ensureDataDir();
-  // 只保留最新的日志
-  const recentLogs = logs.slice(-MAX_LOGS);
-  await fs.writeFile(LOGS_FILE, JSON.stringify(recentLogs, null, 2), 'utf-8');
-
-  // 更新缓存
-  logsCache = recentLogs;
-  lastCacheTime = Date.now();
 }
 
 // 添加日志
-export async function addLog(level, message) {
-  const logs = await loadLogs();
-  logs.push({
-    timestamp: new Date().toISOString(),
-    level,
-    message
-  });
-  await saveLogs(logs);
+export async function addLog(level, message, details = null) {
+  try {
+    const stmt = db.prepare(`
+      INSERT INTO app_logs (timestamp, level, message, details)
+      VALUES (?, ?, ?, ?)
+    `);
+
+    stmt.run(
+      new Date().toISOString(),
+      level,
+      message,
+      details ? JSON.stringify(details) : null
+    );
+
+    // 清理旧日志，保持数量在限制内
+    const countStmt = db.prepare('SELECT COUNT(*) as count FROM app_logs');
+    const { count } = countStmt.get();
+
+    if (count > MAX_LOGS) {
+      const deleteStmt = db.prepare(`
+        DELETE FROM app_logs
+        WHERE id IN (
+          SELECT id FROM app_logs
+          ORDER BY timestamp ASC
+          LIMIT ?
+        )
+      `);
+      deleteStmt.run(count - MAX_LOGS);
+    }
+  } catch (error) {
+    console.error('添加日志失败:', error);
+  }
 }
 
 // 清空日志
 export async function clearLogs() {
-  await saveLogs([]);
+  try {
+    const stmt = db.prepare('DELETE FROM app_logs');
+    stmt.run();
+  } catch (error) {
+    console.error('清空日志失败:', error);
+  }
 }
 
 // 获取最近的日志
 export async function getRecentLogs(limit = 100) {
-  const logs = await loadLogs();
-  return logs.slice(-limit).reverse();
+  try {
+    const stmt = db.prepare(`
+      SELECT * FROM app_logs
+      ORDER BY timestamp DESC
+      LIMIT ?
+    `);
+    return stmt.all(limit);
+  } catch (error) {
+    console.error('获取日志失败:', error);
+    return [];
+  }
 }

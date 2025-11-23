@@ -6,10 +6,10 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import log from '../src/utils/logger.js';
+import db from '../src/database/db.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const ACCOUNTS_FILE = path.join(__dirname, '..', 'data', 'accounts.json');
 const CONFIG_FILE = path.join(__dirname, '..', 'config.json');
 
 // 从配置文件读取 OAuth 配置
@@ -118,31 +118,51 @@ const server = http.createServer((req, res) => {
           expires_in: tokenData.expires_in,
           timestamp: Date.now()
         };
-        
-        let accounts = [];
+
         try {
-          if (fs.existsSync(ACCOUNTS_FILE)) {
-            accounts = JSON.parse(fs.readFileSync(ACCOUNTS_FILE, 'utf-8'));
-          }
+          // 保存到数据库 (admin token, user_id IS NULL)
+          const stmt = db.prepare(`
+            INSERT INTO google_tokens (
+              user_id, access_token, refresh_token, expires_in, timestamp,
+              email, enabled, is_shared, daily_limit, usage_today, last_reset_date,
+              proxy_id, disabled_until, quota_exhausted, total_cost, daily_cost,
+              last_reset_time, total_requests
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `);
+
+          stmt.run(
+            null,  // user_id IS NULL for admin tokens
+            account.access_token,
+            account.refresh_token,
+            account.expires_in,
+            account.timestamp,
+            null,  // email will be fetched later
+            1,     // enabled
+            0,     // is_shared
+            100,   // daily_limit
+            0,     // usage_today
+            new Date().toDateString(),  // last_reset_date
+            null,  // proxy_id
+            null,  // disabled_until
+            0,     // quota_exhausted
+            0,     // total_cost
+            0,     // daily_cost
+            0,     // last_reset_time
+            0      // total_requests
+          );
+
+          log.info('Token 已保存到数据库');
         } catch (err) {
-          log.warn('读取 accounts.json 失败，将创建新文件');
+          log.error('保存 Token 到数据库失败:', err.message);
+          res.writeHead(500, { 'Content-Type': 'text/html; charset=utf-8' });
+          res.end('<h1>保存失败</h1><p>Token 获取成功但保存到数据库失败，请查看日志。</p>');
+          setTimeout(() => server.close(), 1000);
+          return;
         }
-        
-        accounts.push(account);
-        
-        const dir = path.dirname(ACCOUNTS_FILE);
-        if (!fs.existsSync(dir)) {
-          fs.mkdirSync(dir, { recursive: true });
-        }
-        
-        fs.writeFileSync(ACCOUNTS_FILE, JSON.stringify(accounts, null, 2));
-        
-        log.info(`Token 已保存到 ${ACCOUNTS_FILE}`);
-        //log.info(`过期时间: ${account.expires_in}秒`);
-        
+
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
         res.end('<h1>授权成功！</h1><p>Token 已保存，可以关闭此页面。</p>');
-        
+
         setTimeout(() => server.close(), 1000);
       }).catch(err => {
         log.error('Token 交换失败:', err.message);

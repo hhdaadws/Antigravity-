@@ -1,38 +1,16 @@
-import fs from 'fs/promises';
-import path from 'path';
 import logger from '../utils/logger.js';
+import db from '../database/db.js';
 import { getModelPricing } from './pricing_manager.js';
-
-const USAGE_LOG_FILE = path.join(process.cwd(), 'data', 'usage_logs.json');
-
-// 确保数据目录存在
-async function ensureDataDir() {
-  const dataDir = path.dirname(USAGE_LOG_FILE);
-  try {
-    await fs.access(dataDir);
-  } catch {
-    await fs.mkdir(dataDir, { recursive: true });
-  }
-}
 
 // 加载使用日志
 export async function loadUsageLogs() {
-  await ensureDataDir();
   try {
-    const data = await fs.readFile(USAGE_LOG_FILE, 'utf-8');
-    return JSON.parse(data);
+    const logs = db.prepare('SELECT * FROM usage_logs ORDER BY timestamp DESC').all();
+    return logs;
   } catch (error) {
-    if (error.code === 'ENOENT' || error instanceof SyntaxError) {
-      return [];
-    }
-    throw error;
+    logger.error(`加载使用日志失败: ${error.message}`);
+    return [];
   }
-}
-
-// 保存使用日志
-async function saveUsageLogs(logs) {
-  await ensureDataDir();
-  await fs.writeFile(USAGE_LOG_FILE, JSON.stringify(logs, null, 2), 'utf-8');
 }
 
 // 计算费用（使用动态定价配置）
@@ -51,97 +29,140 @@ export async function calculateCost(model, inputTokens, outputTokens) {
 
 // 记录使用日志
 export async function logUsage(keyId, model, inputTokens, outputTokens, sessionId = null, requestId = null) {
-  const logs = await loadUsageLogs();
+  try {
+    const cost = await calculateCost(model, inputTokens, outputTokens);
 
-  const cost = await calculateCost(model, inputTokens, outputTokens);
+    const logEntry = {
+      id: `log_${Date.now()}_${Math.random().toString(36).substring(7)}`,
+      timestamp: new Date().toISOString(),
+      key_id: keyId,
+      model,
+      input_tokens: inputTokens,
+      output_tokens: outputTokens,
+      total_tokens: inputTokens + outputTokens,
+      cost: cost.totalCost,
+      input_cost: cost.inputCost,
+      output_cost: cost.outputCost,
+      session_id: sessionId,
+      request_id: requestId
+    };
 
-  const logEntry = {
-    id: `log_${Date.now()}_${Math.random().toString(36).substring(7)}`,
-    timestamp: new Date().toISOString(),
-    keyId,
-    model,
-    inputTokens,
-    outputTokens,
-    totalTokens: inputTokens + outputTokens,
-    cost: cost.totalCost,
-    inputCost: cost.inputCost,
-    outputCost: cost.outputCost,
-    sessionId,
-    requestId
-  };
+    const stmt = db.prepare(`
+      INSERT INTO usage_logs (id, timestamp, key_id, model, input_tokens, output_tokens, total_tokens, cost, input_cost, output_cost, session_id, request_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
 
-  logs.push(logEntry);
+    stmt.run(
+      logEntry.id,
+      logEntry.timestamp,
+      logEntry.key_id,
+      logEntry.model,
+      logEntry.input_tokens,
+      logEntry.output_tokens,
+      logEntry.total_tokens,
+      logEntry.cost,
+      logEntry.input_cost,
+      logEntry.output_cost,
+      logEntry.session_id,
+      logEntry.request_id
+    );
 
-  // 保留最近10000条日志，避免文件过大
-  if (logs.length > 10000) {
-    logs.splice(0, logs.length - 10000);
+    logger.info(`记录消费: Key ${keyId.substring(0, 10)}..., 模型: ${model}, Token: ${inputTokens}+${outputTokens}, 费用: $${cost.totalCost.toFixed(6)}`);
+
+    return logEntry;
+  } catch (error) {
+    logger.error(`记录使用日志失败: ${error.message}`);
+    throw error;
   }
-
-  await saveUsageLogs(logs);
-  logger.info(`记录消费: Key ${keyId.substring(0, 10)}..., 模型: ${model}, Token: ${inputTokens}+${outputTokens}, 费用: $${cost.totalCost.toFixed(6)}`);
-
-  return logEntry;
 }
 
 // 根据API key查询使用日志
 export async function getUsageByKey(keyId, limit = 100, offset = 0) {
-  const logs = await loadUsageLogs();
-  const filtered = logs.filter(log => log.keyId === keyId);
+  try {
+    const logsStmt = db.prepare(`
+      SELECT * FROM usage_logs
+      WHERE key_id = ?
+      ORDER BY timestamp DESC
+      LIMIT ? OFFSET ?
+    `);
+    const logs = logsStmt.all(keyId, limit, offset);
 
-  // 按时间倒序排列
-  filtered.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+    const countStmt = db.prepare('SELECT COUNT(*) as count, COALESCE(SUM(cost), 0) as totalCost FROM usage_logs WHERE key_id = ?');
+    const { count, totalCost } = countStmt.get(keyId);
 
-  // 分页
-  const paginatedLogs = filtered.slice(offset, offset + limit);
-
-  return {
-    logs: paginatedLogs,
-    total: filtered.length,
-    totalCost: filtered.reduce((sum, log) => sum + log.cost, 0)
-  };
+    return {
+      logs,
+      total: count,
+      totalCost: totalCost || 0
+    };
+  } catch (error) {
+    logger.error(`查询使用日志失败: ${error.message}`);
+    throw error;
+  }
 }
 
 // 获取API key的使用统计
 export async function getUsageStats(keyId) {
-  const logs = await loadUsageLogs();
-  const filtered = logs.filter(log => log.keyId === keyId);
+  try {
+    const stmt = db.prepare(`
+      SELECT
+        COUNT(*) as totalRequests,
+        COALESCE(SUM(input_tokens), 0) as totalInputTokens,
+        COALESCE(SUM(output_tokens), 0) as totalOutputTokens,
+        COALESCE(SUM(total_tokens), 0) as totalTokens,
+        COALESCE(SUM(cost), 0) as totalCost
+      FROM usage_logs
+      WHERE key_id = ?
+    `);
 
-  if (filtered.length === 0) {
+    const stats = stmt.get(keyId);
+
+    if (stats.totalRequests === 0) {
+      return {
+        totalRequests: 0,
+        totalInputTokens: 0,
+        totalOutputTokens: 0,
+        totalTokens: 0,
+        totalCost: 0,
+        averageCost: 0
+      };
+    }
+
     return {
-      totalRequests: 0,
-      totalInputTokens: 0,
-      totalOutputTokens: 0,
-      totalTokens: 0,
-      totalCost: 0,
-      averageCost: 0
+      totalRequests: stats.totalRequests,
+      totalInputTokens: stats.totalInputTokens,
+      totalOutputTokens: stats.totalOutputTokens,
+      totalTokens: stats.totalTokens,
+      totalCost: parseFloat(stats.totalCost.toFixed(6)),
+      averageCost: parseFloat((stats.totalCost / stats.totalRequests).toFixed(6))
     };
+  } catch (error) {
+    logger.error(`获取使用统计失败: ${error.message}`);
+    throw error;
   }
-
-  const totalCost = filtered.reduce((sum, log) => sum + log.cost, 0);
-  const totalInputTokens = filtered.reduce((sum, log) => sum + log.inputTokens, 0);
-  const totalOutputTokens = filtered.reduce((sum, log) => sum + log.outputTokens, 0);
-
-  return {
-    totalRequests: filtered.length,
-    totalInputTokens,
-    totalOutputTokens,
-    totalTokens: totalInputTokens + totalOutputTokens,
-    totalCost: parseFloat(totalCost.toFixed(6)),
-    averageCost: parseFloat((totalCost / filtered.length).toFixed(6))
-  };
 }
 
 // 清理旧日志（清理指定天数之前的日志）
 export async function cleanOldLogs(days = 30) {
-  const logs = await loadUsageLogs();
-  const cutoffDate = new Date();
-  cutoffDate.setDate(cutoffDate.getDate() - days);
+  try {
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - days);
+    const cutoffDateStr = cutoffDate.toISOString();
 
-  const filtered = logs.filter(log => new Date(log.timestamp) >= cutoffDate);
-  const removed = logs.length - filtered.length;
+    const countStmt = db.prepare('SELECT COUNT(*) as count FROM usage_logs WHERE timestamp < ?');
+    const { count: removed } = countStmt.get(cutoffDateStr);
 
-  await saveUsageLogs(filtered);
-  logger.info(`清理了 ${removed} 条 ${days} 天前的使用日志`);
+    const deleteStmt = db.prepare('DELETE FROM usage_logs WHERE timestamp < ?');
+    deleteStmt.run(cutoffDateStr);
 
-  return { removed, remaining: filtered.length };
+    const remainingStmt = db.prepare('SELECT COUNT(*) as count FROM usage_logs');
+    const { count: remaining } = remainingStmt.get();
+
+    logger.info(`清理了 ${removed} 条 ${days} 天前的使用日志`);
+
+    return { removed, remaining };
+  } catch (error) {
+    logger.error(`清理旧日志失败: ${error.message}`);
+    throw error;
+  }
 }

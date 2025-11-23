@@ -1,8 +1,5 @@
-import fs from 'fs/promises';
-import path from 'path';
 import logger from '../utils/logger.js';
-
-const PRICING_FILE = path.join(process.cwd(), 'data', 'pricing.json');
+import db from '../database/db.js';
 
 // 默认定价配置（Gemini 3 Pro 计费标准，美元/百万tokens）
 const DEFAULT_PRICING = {
@@ -28,109 +25,175 @@ const DEFAULT_PRICING = {
   }
 };
 
-// 确保数据目录存在
-async function ensureDataDir() {
-  const dataDir = path.dirname(PRICING_FILE);
+// 初始化默认定价
+async function initializeDefaultPricing() {
   try {
-    await fs.access(dataDir);
-  } catch {
-    await fs.mkdir(dataDir, { recursive: true });
+    const countStmt = db.prepare('SELECT COUNT(*) as count FROM pricing');
+    const { count } = countStmt.get();
+
+    if (count === 0) {
+      const stmt = db.prepare('INSERT INTO pricing (model, input_price, output_price) VALUES (?, ?, ?)');
+      const insert = db.transaction((pricingData) => {
+        for (const [model, prices] of Object.entries(pricingData)) {
+          stmt.run(model, prices.input, prices.output);
+        }
+      });
+      insert(DEFAULT_PRICING);
+      logger.info('已初始化默认定价配置');
+    }
+  } catch (error) {
+    logger.error(`初始化默认定价失败: ${error.message}`);
   }
 }
+
+// 初始化时加载默认定价
+initializeDefaultPricing();
 
 // 加载定价配置
 export async function loadPricing() {
-  await ensureDataDir();
   try {
-    const data = await fs.readFile(PRICING_FILE, 'utf-8');
-    return JSON.parse(data);
+    const rows = db.prepare('SELECT model, input_price, output_price FROM pricing').all();
+    const pricing = {};
+    rows.forEach(row => {
+      pricing[row.model] = {
+        input: row.input_price,
+        output: row.output_price
+      };
+    });
+    return pricing;
   } catch (error) {
-    if (error.code === 'ENOENT') {
-      // 文件不存在，使用默认配置并保存
-      await savePricing(DEFAULT_PRICING);
-      return DEFAULT_PRICING;
-    }
-    throw error;
+    logger.error(`加载定价配置失败: ${error.message}`);
+    return DEFAULT_PRICING;
   }
-}
-
-// 保存定价配置
-export async function savePricing(pricing) {
-  await ensureDataDir();
-  await fs.writeFile(PRICING_FILE, JSON.stringify(pricing, null, 2), 'utf-8');
-  logger.info('定价配置已保存');
 }
 
 // 获取特定模型的定价
 export async function getModelPricing(model) {
-  const pricing = await loadPricing();
-  return pricing[model] || pricing['default'];
+  try {
+    const stmt = db.prepare('SELECT input_price, output_price FROM pricing WHERE model = ?');
+    const row = stmt.get(model);
+
+    if (row) {
+      return {
+        input: row.input_price,
+        output: row.output_price
+      };
+    }
+
+    // 如果找不到，返回默认定价
+    const defaultStmt = db.prepare('SELECT input_price, output_price FROM pricing WHERE model = ?');
+    const defaultRow = defaultStmt.get('default');
+
+    return defaultRow ? {
+      input: defaultRow.input_price,
+      output: defaultRow.output_price
+    } : DEFAULT_PRICING.default;
+  } catch (error) {
+    logger.error(`获取模型定价失败: ${error.message}`);
+    return DEFAULT_PRICING.default;
+  }
 }
 
 // 更新特定模型的定价
 export async function updateModelPricing(model, inputPrice, outputPrice) {
-  const pricing = await loadPricing();
+  try {
+    if (inputPrice < 0 || outputPrice < 0) {
+      throw new Error('价格不能为负数');
+    }
 
-  if (inputPrice < 0 || outputPrice < 0) {
-    throw new Error('价格不能为负数');
+    const stmt = db.prepare(`
+      INSERT INTO pricing (model, input_price, output_price)
+      VALUES (?, ?, ?)
+      ON CONFLICT(model) DO UPDATE SET
+        input_price = excluded.input_price,
+        output_price = excluded.output_price
+    `);
+
+    stmt.run(model, parseFloat(inputPrice), parseFloat(outputPrice));
+    logger.info(`模型 ${model} 的定价已更新: input=$${inputPrice}/M, output=$${outputPrice}/M`);
+
+    return {
+      input: parseFloat(inputPrice),
+      output: parseFloat(outputPrice)
+    };
+  } catch (error) {
+    logger.error(`更新模型定价失败: ${error.message}`);
+    throw error;
   }
-
-  pricing[model] = {
-    input: parseFloat(inputPrice),
-    output: parseFloat(outputPrice)
-  };
-
-  await savePricing(pricing);
-  logger.info(`模型 ${model} 的定价已更新: input=$${inputPrice}/M, output=$${outputPrice}/M`);
-
-  return pricing[model];
 }
 
 // 删除模型定价（恢复为使用默认定价）
 export async function deleteModelPricing(model) {
-  if (model === 'default') {
-    throw new Error('不能删除默认定价');
+  try {
+    if (model === 'default') {
+      throw new Error('不能删除默认定价');
+    }
+
+    const checkStmt = db.prepare('SELECT COUNT(*) as count FROM pricing WHERE model = ?');
+    const { count } = checkStmt.get(model);
+
+    if (count === 0) {
+      throw new Error('模型定价不存在');
+    }
+
+    const deleteStmt = db.prepare('DELETE FROM pricing WHERE model = ?');
+    deleteStmt.run(model);
+    logger.info(`模型 ${model} 的定价已删除，将使用默认定价`);
+
+    return true;
+  } catch (error) {
+    logger.error(`删除模型定价失败: ${error.message}`);
+    throw error;
   }
-
-  const pricing = await loadPricing();
-
-  if (!pricing[model]) {
-    throw new Error('模型定价不存在');
-  }
-
-  delete pricing[model];
-  await savePricing(pricing);
-  logger.info(`模型 ${model} 的定价已删除，将使用默认定价`);
-
-  return true;
 }
 
 // 重置所有定价为默认值
 export async function resetPricing() {
-  await savePricing(DEFAULT_PRICING);
-  logger.info('所有定价已重置为默认值');
-  return DEFAULT_PRICING;
+  try {
+    const deleteStmt = db.prepare('DELETE FROM pricing');
+    deleteStmt.run();
+
+    const stmt = db.prepare('INSERT INTO pricing (model, input_price, output_price) VALUES (?, ?, ?)');
+    const insert = db.transaction((pricingData) => {
+      for (const [model, prices] of Object.entries(pricingData)) {
+        stmt.run(model, prices.input, prices.output);
+      }
+    });
+    insert(DEFAULT_PRICING);
+
+    logger.info('所有定价已重置为默认值');
+    return DEFAULT_PRICING;
+  } catch (error) {
+    logger.error(`重置定价失败: ${error.message}`);
+    throw error;
+  }
 }
 
 // 添加新模型定价
 export async function addModelPricing(model, inputPrice, outputPrice) {
-  const pricing = await loadPricing();
+  try {
+    const checkStmt = db.prepare('SELECT COUNT(*) as count FROM pricing WHERE model = ?');
+    const { count } = checkStmt.get(model);
 
-  if (pricing[model]) {
-    throw new Error('模型定价已存在，请使用更新功能');
+    if (count > 0) {
+      throw new Error('模型定价已存在，请使用更新功能');
+    }
+
+    if (inputPrice < 0 || outputPrice < 0) {
+      throw new Error('价格不能为负数');
+    }
+
+    const stmt = db.prepare('INSERT INTO pricing (model, input_price, output_price) VALUES (?, ?, ?)');
+    stmt.run(model, parseFloat(inputPrice), parseFloat(outputPrice));
+
+    logger.info(`新模型 ${model} 的定价已添加: input=$${inputPrice}/M, output=$${outputPrice}/M`);
+
+    return {
+      input: parseFloat(inputPrice),
+      output: parseFloat(outputPrice)
+    };
+  } catch (error) {
+    logger.error(`添加模型定价失败: ${error.message}`);
+    throw error;
   }
-
-  if (inputPrice < 0 || outputPrice < 0) {
-    throw new Error('价格不能为负数');
-  }
-
-  pricing[model] = {
-    input: parseFloat(inputPrice),
-    output: parseFloat(outputPrice)
-  };
-
-  await savePricing(pricing);
-  logger.info(`新模型 ${model} 的定价已添加: input=$${inputPrice}/M, output=$${outputPrice}/M`);
-
-  return pricing[model];
 }
