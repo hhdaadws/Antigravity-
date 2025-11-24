@@ -1,6 +1,4 @@
 import AdmZip from 'adm-zip';
-import path from 'path';
-import { spawn } from 'child_process';
 import https from 'https';
 import logger from '../utils/logger.js';
 import tokenManager from '../auth/token_manager.js';
@@ -108,92 +106,9 @@ export async function setTokenProxy(index, proxyId) {
   }
 }
 
-// 检查并清理 OAuth 端口
-async function cleanupOAuthPort() {
-  const OAUTH_PORT = 8099;
-  try {
-    // 尝试使用 npx kill-port 清理端口
-    await new Promise((resolve, reject) => {
-      const killProcess = spawn('npx', ['kill-port', OAUTH_PORT.toString()], {
-        stdio: 'pipe'
-      });
-
-      killProcess.on('close', (code) => {
-        // 无论成功或失败都继续，因为端口可能本来就没被占用
-        resolve();
-      });
-
-      killProcess.on('error', () => {
-        // 忽略错误，继续执行
-        resolve();
-      });
-
-      // 最多等待 2 秒
-      setTimeout(resolve, 2000);
-    });
-
-    logger.info('OAuth 端口清理完成');
-  } catch (error) {
-    // 忽略错误
-    logger.warn('OAuth 端口清理时出现问题，继续尝试启动');
-  }
-}
-
-// 触发登录流程
-export async function triggerLogin() {
-  // 先清理可能占用的端口
-  await cleanupOAuthPort();
-
-  return new Promise((resolve, reject) => {
-    logger.info('启动登录流程...');
-
-    const loginScript = path.join(process.cwd(), 'scripts', 'oauth-server.js');
-    // 移除 shell: true 以避免安全警告
-    const child = spawn('node', [loginScript], {
-      stdio: 'pipe'
-    });
-
-    let authUrl = '';
-    let output = '';
-
-    child.stdout.on('data', (data) => {
-      const text = data.toString();
-      output += text;
-
-      // 提取授权 URL
-      const urlMatch = text.match(/(https:\/\/accounts\.google\.com\/o\/oauth2\/v2\/auth\?[^\s]+)/);
-      if (urlMatch) {
-        authUrl = urlMatch[1];
-      }
-
-      logger.info(text.trim());
-    });
-
-    child.stderr.on('data', (data) => {
-      logger.error(data.toString().trim());
-    });
-
-    child.on('close', (code) => {
-      if (code === 0) {
-        logger.info('登录流程完成');
-        resolve({ success: true, authUrl, message: '登录成功' });
-      } else {
-        reject(new Error('登录流程失败'));
-      }
-    });
-
-    // 5 秒后返回授权 URL，不等待完成
-    setTimeout(() => {
-      if (authUrl) {
-        resolve({ success: true, authUrl, message: '请在浏览器中完成授权' });
-      }
-    }, 5000);
-
-    child.on('error', (error) => {
-      reject(error);
-    });
-  });
-}
+// triggerLogin() 函数已删除
+// 该项目不再使用独立的 OAuth Server，改为只支持手动粘贴回调 URL 的方式
+// 这样可以避免端口冲突问题，并且适用于所有部署环境（本地、Docker、远程服务器）
 
 // 获取账号统计信息
 export async function getAccountStats() {

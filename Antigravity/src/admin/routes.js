@@ -8,7 +8,7 @@ import { getUsageByKey, getUsageStats } from './usage_logger.js';
 import { loadPricing, updateModelPricing, deleteModelPricing, resetPricing, addModelPricing } from './pricing_manager.js';
 import { getRecentLogs, clearLogs, addLog } from './log_manager.js';
 import { getSystemStatus, incrementRequestCount } from './monitor.js';
-import { loadAccounts, deleteAccount, toggleAccount, setTokenProxy, triggerLogin, getAccountStats, addTokenFromCallback, getAccountName, importTokens } from './token_admin.js';
+import { loadAccounts, deleteAccount, toggleAccount, setTokenProxy, getAccountStats, addTokenFromCallback, getAccountName, importTokens } from './token_admin.js';
 import { createSession, validateSession, destroySession, verifyPassword, adminAuth } from './session.js';
 import { loadSettings, saveSettings } from './settings_manager.js';
 import tokenManager from '../auth/token_manager.js';
@@ -370,17 +370,8 @@ router.patch('/tokens/:index', async (req, res) => {
   }
 });
 
-// 触发登录流程
-router.post('/tokens/login', async (req, res) => {
-  try {
-    await addLog('info', '开始 Google OAuth 登录流程');
-    const result = await triggerLogin();
-    res.json(result);
-  } catch (error) {
-    await addLog('error', `登录失败: ${error.message}`);
-    res.status(500).json({ error: error.message });
-  }
-});
+// /tokens/login 路由已删除 - 不再使用独立 OAuth Server
+// 改为只支持手动粘贴回调 URL 的方式（见 /tokens/callback 路由）
 
 // 获取 Token 统计
 router.get('/tokens/stats', async (req, res) => {

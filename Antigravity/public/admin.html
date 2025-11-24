@@ -162,23 +162,32 @@
         <div id="tokens" class="tab-content">
             <div class="card">
                 <h3>添加令牌</h3>
-                <div style="display: flex; gap: 30px; flex-wrap: wrap;">
-                    <div style="flex: 1; min-width: 300px; padding-right: 20px; border-right: 1px solid #eee;">
-                        <h4>方法 1: Google OAuth 登录 (推荐)</h4>
-                        <p style="color: #6b7280; margin-bottom: 15px; font-size: 0.9em;">点击下方按钮开始 Google OAuth 登录流程。</p>
-                        <button onclick="triggerGoogleLogin()" id="loginBtn" class="btn-success" style="width: 100%;">使用 Google 登录</button>
-                        <div id="loginResult" style="margin-top: 15px;"></div>
+                <div style="max-width: 800px;">
+                    <h4 style="margin-bottom: 10px;">添加 Google OAuth Token</h4>
+                    <div style="background: #f8f9fa; padding: 15px; border-radius: 8px; margin-bottom: 20px; border-left: 4px solid #3b82f6;">
+                        <p style="margin: 0 0 10px 0; font-weight: 500; color: #1f2937;">📝 操作步骤：</p>
+                        <ol style="margin: 0; padding-left: 20px; color: #4b5563; line-height: 1.8;">
+                            <li>点击下方的"生成授权链接"按钮</li>
+                            <li>在新标签页中打开授权链接，登录 Google 并授权</li>
+                            <li>授权后会跳转到一个无法访问的页面（正常现象）</li>
+                            <li>从浏览器地址栏复制完整的回调 URL（包含 code 参数）</li>
+                            <li>将回调 URL 粘贴到下方输入框，点击"添加 Token"</li>
+                        </ol>
                     </div>
 
-                    <div style="flex: 1; min-width: 300px;">
-                        <h4>方法 2: 手动添加 (回调 URL)</h4>
-                        <p style="color: #6b7280; margin-bottom: 15px; font-size: 0.9em;">如果自动回调失败，请在此处粘贴完整的回调 URL。</p>
-                        <div class="form-group">
-                            <input type="text" id="callbackUrl" placeholder="http://localhost:xxxx/oauth-callback?code=..." style="width: 100%;">
-                        </div>
-                        <button onclick="addTokenManually()" id="addTokenBtn" class="btn-secondary" style="width: 100%;">添加令牌</button>
-                        <div id="addTokenResult" style="margin-top: 15px;"></div>
+                    <button onclick="generateAuthUrl()" class="btn-success" style="width: auto; margin-bottom: 15px;">
+                        🔗 生成授权链接
+                    </button>
+                    <div id="authUrlDisplay" style="margin-bottom: 20px;"></div>
+
+                    <div class="form-group">
+                        <label style="display: block; margin-bottom: 8px; font-weight: 500;">回调 URL：</label>
+                        <input type="text" id="callbackUrl" placeholder="粘贴授权后的回调 URL，例如: http://localhost:8099/oauth-callback?code=..." style="width: 100%; font-family: monospace; font-size: 13px;">
                     </div>
+                    <button onclick="addTokenManually()" id="addTokenBtn" class="btn-primary" style="width: auto;">
+                        ✅ 添加 Token
+                    </button>
+                    <div id="addTokenResult" style="margin-top: 15px;"></div>
                 </div>
             </div>
 
@@ -722,46 +731,8 @@
             }
         }
 
-        // Token 管理
-        async function triggerGoogleLogin() {
-            const btn = document.getElementById('loginBtn');
-            const resultEl = document.getElementById('loginResult');
-
-            btn.disabled = true;
-            btn.textContent = '登录中...';
-            resultEl.innerHTML = '<div class="alert alert-info">正在启动登录流程...</div>';
-
-            try {
-                const response = await authFetch(`${API_BASE}/admin/tokens/login`, {
-                    method: 'POST'
-                });
-                const data = await response.json();
-
-                if (data.success && data.authUrl) {
-                    resultEl.innerHTML = `
-            <div class="alert alert-success">
-              <p><strong>登录流程已启动！</strong></p>
-              <p style="margin: 10px 0;">请在打开的浏览器窗口中完成 Google 授权。</p>
-              <a href="${data.authUrl}" target="_blank" class="btn-success" style="display: inline-block; text-decoration: none; margin-top: 10px;">点击这里打开授权页面</a>
-            </div>
-          `;
-                    // 自动打开授权页面
-                    window.open(data.authUrl, '_blank');
-                    // 10秒后刷新Token列表
-                    setTimeout(() => {
-                        loadTokens();
-                        resultEl.innerHTML = '<div class="alert alert-info">授权完成后，Token 将自动添加到列表中。如未看到，请点击"刷新列表"按钮。</div>';
-                    }, 10000);
-                } else {
-                    resultEl.innerHTML = `<div class="alert alert-error">${data.message || '登录失败'}</div>`;
-                }
-            } catch (error) {
-                resultEl.innerHTML = `<div class="alert alert-error">登录失败: ${error.message}</div>`;
-            } finally {
-                btn.disabled = false;
-                btn.textContent = '登录获取 Token';
-            }
-        }
+        // Token 管理 - triggerGoogleLogin() 已删除
+        // 不再使用独立 OAuth Server，改为只支持手动粘贴回调 URL
 
         let selectedTokens = new Set();
 
@@ -1012,6 +983,58 @@
                 loadTokens();
             } catch (error) {
                 alert('恢复 Token 失败: ' + error.message);
+            }
+        }
+
+        // 生成 OAuth 授权链接
+        async function generateAuthUrl() {
+            const displayEl = document.getElementById('authUrlDisplay');
+
+            try {
+                // 从配置中获取 OAuth Client ID
+                const settingsResponse = await authFetch(`${API_BASE}/admin/settings`);
+                const settings = await settingsResponse.json();
+
+                const clientId = settings.oauthClientId;
+                if (!clientId) {
+                    displayEl.innerHTML = '<div class="alert alert-error">❌ 错误：未配置 OAuth Client ID，请先在系统设置中配置</div>';
+                    return;
+                }
+
+                // 生成授权 URL
+                const redirectUri = 'http://localhost:8099/oauth-callback';
+                const scope = [
+                    'https://www.googleapis.com/auth/cloud-platform',
+                    'https://www.googleapis.com/auth/userinfo.email',
+                    'https://www.googleapis.com/auth/userinfo.profile',
+                    'https://www.googleapis.com/auth/cclog',
+                    'https://www.googleapis.com/auth/experimentsandconfigs'
+                ].join(' ');
+
+                const params = new URLSearchParams({
+                    client_id: clientId,
+                    redirect_uri: redirectUri,
+                    response_type: 'code',
+                    scope: scope,
+                    access_type: 'offline',
+                    prompt: 'consent'
+                });
+
+                const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
+
+                displayEl.innerHTML = `
+                    <div style="background: #ecfdf5; padding: 15px; border-radius: 8px; border: 1px solid #10b981;">
+                        <p style="margin: 0 0 10px 0; font-weight: 500; color: #065f46;">✅ 授权链接已生成：</p>
+                        <div style="background: white; padding: 10px; border-radius: 4px; margin-bottom: 10px; word-break: break-all; font-family: monospace; font-size: 12px; color: #4b5563;">
+                            ${authUrl}
+                        </div>
+                        <a href="${authUrl}" target="_blank" class="btn-success" style="display: inline-block; text-decoration: none;">
+                            🚀 在新标签页中打开授权页面
+                        </a>
+                    </div>
+                `;
+            } catch (error) {
+                displayEl.innerHTML = `<div class="alert alert-error">❌ 生成授权链接失败: ${error.message}</div>`;
             }
         }
 
