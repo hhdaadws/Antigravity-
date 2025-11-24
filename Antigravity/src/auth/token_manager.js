@@ -76,7 +76,8 @@ class TokenManager {
   isExpired(token) {
     if (!token.timestamp || !token.expires_in) return true;
     const expiresAt = token.timestamp + (token.expires_in * 1000);
-    return Date.now() >= expiresAt - 300000;
+    // 提前30秒判断过期，减少不必要的刷新请求
+    return Date.now() >= expiresAt - 30000;
   }
 
   async refreshToken(token) {
