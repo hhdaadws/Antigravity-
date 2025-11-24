@@ -12,10 +12,23 @@ function geminiContentsToAntigravity(contents) {
     const parts = [];
 
     for (const part of content.parts) {
-      // 保留所有原始字段，包括 thought_signature
-      // Gemini 3 Pro 要求在函数调用时原样传回 thought_signature，否则会报 400 错误
-      // 参考：https://ai.google.dev/gemini-api/docs/thought-signatures
-      parts.push({ ...part });
+      // 复制 part 对象
+      const cleanedPart = { ...part };
+
+      // 移除 thought_signature：
+      // 1. 来自客户端的历史消息中的签名可能来自其他环境（如官方 CLI）
+      // 2. 跨环境/跨 token 使用签名会导致 "Corrupted thought signature" 错误
+      // 3. Antigravity 响应中生成的新签名由客户端在下一轮保留即可
+      if (cleanedPart.thought_signature !== undefined) {
+        delete cleanedPart.thought_signature;
+      }
+
+      // 同样处理 functionCall 内部的 thought_signature
+      if (cleanedPart.functionCall?.thought_signature !== undefined) {
+        delete cleanedPart.functionCall.thought_signature;
+      }
+
+      parts.push(cleanedPart);
     }
 
     antigravityMessages.push({ role, parts });
@@ -111,9 +124,37 @@ export function generateAntigravityRequestFromGemini(geminiRequest, modelName) {
 }
 
 /**
+ * 清理响应中的 thought_signature（避免跨环境污染）
+ */
+function cleanResponseThoughtSignature(data) {
+  if (!data.response?.candidates) return data;
+
+  const cleanedData = JSON.parse(JSON.stringify(data));
+
+  for (const candidate of cleanedData.response.candidates) {
+    if (candidate.content?.parts) {
+      for (const part of candidate.content.parts) {
+        // 移除 part 级别的 thought_signature
+        if (part.thought_signature !== undefined) {
+          delete part.thought_signature;
+        }
+
+        // 移除 functionCall 内部的 thought_signature
+        if (part.functionCall?.thought_signature !== undefined) {
+          delete part.functionCall.thought_signature;
+        }
+      }
+    }
+  }
+
+  return cleanedData;
+}
+
+/**
  * 将 Antigravity 的 SSE 响应转换为 Gemini 格式
  */
 export function convertAntigravityToGeminiSSE(data) {
-  // Antigravity 的响应已经是 Gemini 格式，直接返回
-  return data;
+  // 清理 thought_signature 避免跨环境使用时报错
+  // 用户可能在官方 CLI 和 Antigravity 之间切换，签名是环境绑定的
+  return cleanResponseThoughtSignature(data);
 }
