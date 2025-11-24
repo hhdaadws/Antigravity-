@@ -995,7 +995,7 @@
                 const settingsResponse = await authFetch(`${API_BASE}/admin/settings`);
                 const settings = await settingsResponse.json();
 
-                const clientId = settings.oauthClientId;
+                const clientId = settings.oauth?.clientId || settings.oauthClientId;
                 if (!clientId) {
                     displayEl.innerHTML = '<div class="alert alert-error">❌ 错误：未配置 OAuth Client ID，请先在系统设置中配置</div>';
                     return;
