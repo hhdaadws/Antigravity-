@@ -12,9 +12,10 @@ function geminiContentsToAntigravity(contents) {
     const parts = [];
 
     for (const part of content.parts) {
-      // 保留所有原始字段，包括 thought_signature
-      // 使用扩展运算符确保不遗漏任何字段
-      parts.push({ ...part });
+      // 复制 part 并移除 thought_signature（API 内部字段，不应出现在请求中）
+      const cleanedPart = { ...part };
+      delete cleanedPart.thought_signature;
+      parts.push(cleanedPart);
     }
 
     antigravityMessages.push({ role, parts });
