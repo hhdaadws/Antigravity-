@@ -12,10 +12,10 @@ function geminiContentsToAntigravity(contents) {
     const parts = [];
 
     for (const part of content.parts) {
-      // 复制 part 并移除 thought_signature（API 内部字段，不应出现在请求中）
-      const cleanedPart = { ...part };
-      delete cleanedPart.thought_signature;
-      parts.push(cleanedPart);
+      // 保留所有原始字段，包括 thought_signature
+      // Gemini 3 Pro 要求在函数调用时原样传回 thought_signature，否则会报 400 错误
+      // 参考：https://ai.google.dev/gemini-api/docs/thought-signatures
+      parts.push({ ...part });
     }
 
     antigravityMessages.push({ role, parts });
