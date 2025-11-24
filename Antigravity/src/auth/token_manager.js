@@ -1,6 +1,7 @@
 import { log } from '../utils/logger.js';
 import proxyManager from '../admin/proxy_manager.js';
 import db from '../database/db.js';
+import { fetchWithRetry } from '../utils/utils.js';
 
 const CLIENT_ID = '1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com';
 const CLIENT_SECRET = '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';
@@ -114,7 +115,7 @@ class TokenManager {
       }
     }
 
-    const response = await fetch('https://oauth2.googleapis.com/token', fetchOptions);
+    const response = await fetchWithRetry('https://oauth2.googleapis.com/token', fetchOptions, 3, 1000);
 
     if (response.ok) {
       const data = await response.json();

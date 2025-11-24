@@ -1,5 +1,6 @@
 import tokenManager from '../auth/token_manager.js';
 import config from '../config/config.js';
+import { fetchWithRetry } from '../utils/utils.js';
 
 export async function generateAssistantResponse(requestBody, callback) {
   const token = await tokenManager.getAnyEnabledToken();
@@ -7,10 +8,10 @@ export async function generateAssistantResponse(requestBody, callback) {
   if (!token) {
     throw new Error('没有可用的token，请运行 npm run login 获取token');
   }
-  
+
   const url = config.api.url;
-  
-  const response = await fetch(url, {
+
+  const response = await fetchWithRetry(url, {
     method: 'POST',
     headers: {
       'Host': config.api.host,
@@ -20,7 +21,7 @@ export async function generateAssistantResponse(requestBody, callback) {
       'Accept-Encoding': 'gzip'
     },
     body: JSON.stringify(requestBody)
-  });
+  }, 3, 1000);
 
   if (!response.ok) {
     const errorText = await response.text();
@@ -97,8 +98,8 @@ export async function getAvailableModels() {
   if (!token) {
     throw new Error('没有可用的token，请运行 npm run login 获取token');
   }
-  
-  const response = await fetch(config.api.modelsUrl, {
+
+  const response = await fetchWithRetry(config.api.modelsUrl, {
     method: 'POST',
     headers: {
       'Host': config.api.host,
@@ -108,7 +109,7 @@ export async function getAvailableModels() {
       'Accept-Encoding': 'gzip'
     },
     body: JSON.stringify({})
-  });
+  }, 3, 1000);
 
   const data = await response.json();
   

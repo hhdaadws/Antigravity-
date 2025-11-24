@@ -225,10 +225,53 @@ function escapeHtml(unsafe) {
     .replace(/'/g, "&#039;");
 }
 
+/**
+ * 带重试机制的 fetch 函数
+ * @param {string} url - 请求 URL
+ * @param {Object} options - fetch 选项
+ * @param {number} maxRetries - 最大重试次数，默认3次
+ * @param {number} retryDelay - 重试延迟（毫秒），默认1000ms
+ * @returns {Promise<Response>}
+ */
+async function fetchWithRetry(url, options = {}, maxRetries = 3, retryDelay = 1000) {
+  let lastError;
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      // 设置30秒超时
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 30000);
+
+      const response = await fetch(url, {
+        ...options,
+        signal: controller.signal
+      });
+
+      clearTimeout(timeout);
+      return response;
+    } catch (error) {
+      lastError = error;
+
+      // 如果是最后一次尝试，直接抛出错误
+      if (attempt === maxRetries) {
+        break;
+      }
+
+      // 等待后重试（使用指数退避）
+      const delay = retryDelay * attempt;
+      console.log(`[Retry] 请求失败，${delay}ms 后重试 (${attempt}/${maxRetries})...`);
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+  }
+
+  throw lastError;
+}
+
 export{
   generateRequestId,
   generateSessionId,
   generateProjectId,
   generateRequestBody,
-  escapeHtml
+  escapeHtml,
+  fetchWithRetry
 }
